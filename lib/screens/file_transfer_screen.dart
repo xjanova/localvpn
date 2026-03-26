@@ -30,7 +30,7 @@ class _FileTransferScreenState extends State<FileTransferScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 2, vsync: this);
     widget.fileTransferService.addListener(_onChanged);
   }
 
@@ -52,22 +52,26 @@ class _FileTransferScreenState extends State<FileTransferScreen>
     final filePath = result.files.single.path;
     if (filePath == null) return;
 
-    final shared = await widget.fileTransferService.shareFile(filePath);
+    final success = await widget.fileTransferService.shareFile(filePath);
 
     if (!mounted) return;
 
-    if (shared != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('แชร์ไฟล์ "${shared.fileName}" แล้ว'),
-          backgroundColor: AppColors.success.withValues(alpha: 0.9),
-        ),
-      );
-    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(success
+            ? 'แชร์ไฟล์สำเร็จ - ทุกคนในเครือข่ายจะเห็น'
+            : 'ไม่สามารถแชร์ไฟล์ได้'),
+        backgroundColor: success
+            ? AppColors.success.withValues(alpha: 0.9)
+            : AppColors.error.withValues(alpha: 0.9),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final fts = widget.fileTransferService;
+
     return SafeArea(
       child: Column(
         children: [
@@ -77,37 +81,38 @@ class _FileTransferScreenState extends State<FileTransferScreen>
             child: Row(
               children: [
                 const Expanded(
-                  child: Text(
-                    'ส่งไฟล์ P2P',
-                    style: TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.textPrimary,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'แชร์ไฟล์ P2P',
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      Text(
+                        'แชร์ไฟล์แบบ BitTorrent - ยิ่งคนเยอะยิ่งเร็ว',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textMuted,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                // Discover button
                 IconButton(
-                  onPressed: () {
-                    widget.fileTransferService.discoverFiles();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: const Text('กำลังค้นหาไฟล์จากอุปกรณ์อื่น...'),
-                        backgroundColor:
-                            AppColors.primary.withValues(alpha: 0.9),
-                        duration: const Duration(seconds: 2),
-                      ),
-                    );
-                  },
+                  onPressed: () => fts.refreshFileList(),
                   icon: const Icon(Icons.refresh, color: AppColors.primary),
-                  tooltip: 'ค้นหาไฟล์',
+                  tooltip: 'รีเฟรช',
                 ),
               ],
             ),
           ).animate().fadeIn(duration: 300.ms),
           const SizedBox(height: 8),
 
-          // P2P status banner
+          // Not connected warning
           if (!widget.p2pService.isActive)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -117,20 +122,18 @@ class _FileTransferScreenState extends State<FileTransferScreen>
                   color: AppColors.warning.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(
-                    color: AppColors.warning.withValues(alpha: 0.3),
-                  ),
+                      color: AppColors.warning.withValues(alpha: 0.3)),
                 ),
                 child: const Row(
                   children: [
-                    Icon(Icons.warning_amber, color: AppColors.warning, size: 20),
+                    Icon(Icons.warning_amber,
+                        color: AppColors.warning, size: 20),
                     SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'เชื่อมต่อเครือข่ายก่อนเพื่อส่งไฟล์ P2P',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: AppColors.warning,
-                        ),
+                        'เชื่อมต่อเครือข่ายก่อนเพื่อแชร์ไฟล์',
+                        style:
+                            TextStyle(fontSize: 13, color: AppColors.warning),
                       ),
                     ),
                   ],
@@ -139,6 +142,20 @@ class _FileTransferScreenState extends State<FileTransferScreen>
             ),
 
           const SizedBox(height: 8),
+
+          // Share button
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: SizedBox(
+              width: double.infinity,
+              child: NeonButton(
+                text: 'แชร์ไฟล์ให้ทุกคนในเครือข่าย',
+                icon: Icons.add,
+                onPressed: _pickAndShareFile,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
 
           // Tabs
           Container(
@@ -157,34 +174,17 @@ class _FileTransferScreenState extends State<FileTransferScreen>
               ),
               labelColor: Colors.white,
               unselectedLabelColor: AppColors.textMuted,
-              labelStyle: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-              ),
+              labelStyle:
+                  const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
               tabs: [
                 Tab(
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.cloud_upload, size: 16),
+                      const Icon(Icons.folder_shared, size: 16),
                       const SizedBox(width: 4),
-                      const Text('แชร์'),
-                      if (widget.fileTransferService.sharedFiles.isNotEmpty)
-                        _buildBadge(
-                            widget.fileTransferService.sharedFiles.length),
-                    ],
-                  ),
-                ),
-                Tab(
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.cloud_download, size: 16),
-                      const SizedBox(width: 4),
-                      const Text('ดาวน์โหลด'),
-                      if (widget.fileTransferService.remoteFiles.isNotEmpty)
-                        _buildBadge(
-                            widget.fileTransferService.remoteFiles.length),
+                      const Text('ไฟล์ในเครือข่าย'),
+                      if (fts.networkFiles.isNotEmpty) _buildBadge(fts.networkFiles.length),
                     ],
                   ),
                 ),
@@ -195,9 +195,7 @@ class _FileTransferScreenState extends State<FileTransferScreen>
                       const Icon(Icons.swap_vert, size: 16),
                       const SizedBox(width: 4),
                       const Text('กำลังส่ง'),
-                      if (widget.fileTransferService.transfers.isNotEmpty)
-                        _buildBadge(
-                            widget.fileTransferService.transfers.length),
+                      if (fts.transfers.isNotEmpty) _buildBadge(fts.transfers.length),
                     ],
                   ),
                 ),
@@ -212,8 +210,7 @@ class _FileTransferScreenState extends State<FileTransferScreen>
             child: TabBarView(
               controller: _tabController,
               children: [
-                _buildSharedTab(),
-                _buildRemoteTab(),
+                _buildNetworkFilesTab(),
                 _buildTransfersTab(),
               ],
             ),
@@ -231,179 +228,90 @@ class _FileTransferScreenState extends State<FileTransferScreen>
         color: Colors.white.withValues(alpha: 0.2),
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Text(
-        '$count',
-        style: const TextStyle(fontSize: 10),
-      ),
+      child: Text('$count', style: const TextStyle(fontSize: 10)),
     );
   }
 
-  // ==================== Shared Files Tab ====================
-  Widget _buildSharedTab() {
-    final files = widget.fileTransferService.sharedFiles;
+  // ==================== Network Files Tab ====================
+  Widget _buildNetworkFilesTab() {
+    final fts = widget.fileTransferService;
+    final files = fts.networkFiles;
 
-    return Column(
-      children: [
-        // Share button
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: SizedBox(
-            width: double.infinity,
-            child: NeonButton(
-              text: 'เลือกไฟล์เพื่อแชร์',
-              icon: Icons.add,
-              onPressed: _pickAndShareFile,
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-
-        if (files.isEmpty)
-          Expanded(
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.folder_open,
-                      size: 64,
-                      color: AppColors.textMuted.withValues(alpha: 0.5)),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'ยังไม่ได้แชร์ไฟล์',
-                    style: TextStyle(
-                        fontSize: 16, color: AppColors.textSecondary),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'กดปุ่มด้านบนเพื่อเลือกไฟล์แชร์ให้อุปกรณ์อื่น',
-                    style:
-                        TextStyle(fontSize: 13, color: AppColors.textMuted),
-                  ),
-                ],
-              ),
-            ),
-          )
-        else
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              itemCount: files.length,
-              itemBuilder: (context, index) => _buildSharedFileCard(files[index]),
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildSharedFileCard(SharedFile file) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: GlassCard(
-        borderColor: AppColors.primary.withValues(alpha: 0.2),
-        child: Row(
-          children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: AppColors.primary.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(11),
-              ),
-              child: Icon(
-                _getFileIcon(file.fileName),
-                color: AppColors.primary,
-                size: 22,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    file.fileName,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textPrimary,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  Text(
-                    _formatSize(file.fileSize),
-                    style: const TextStyle(
-                        fontSize: 12, color: AppColors.textMuted),
-                  ),
-                ],
-              ),
-            ),
-            IconButton(
-              onPressed: () {
-                widget.fileTransferService.unshareFile(file.id);
-              },
-              icon: const Icon(Icons.close, color: AppColors.error, size: 20),
-              tooltip: 'เลิกแชร์',
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ==================== Remote Files Tab ====================
-  Widget _buildRemoteTab() {
-    final files = widget.fileTransferService.remoteFiles;
+    if (fts.isLoading) {
+      return const Center(
+        child: CircularProgressIndicator(color: AppColors.primary),
+      );
+    }
 
     if (files.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.search_off,
+            Icon(Icons.folder_open,
                 size: 64,
                 color: AppColors.textMuted.withValues(alpha: 0.5)),
             const SizedBox(height: 12),
             const Text(
-              'ไม่พบไฟล์จากอุปกรณ์อื่น',
+              'ยังไม่มีไฟล์ในเครือข่าย',
               style: TextStyle(fontSize: 16, color: AppColors.textSecondary),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 4),
+            const Text(
+              'กดปุ่ม "แชร์ไฟล์" เพื่อเริ่มแชร์',
+              style: TextStyle(fontSize: 13, color: AppColors.textMuted),
+            ),
+            const SizedBox(height: 16),
             NeonButton(
-              text: 'ค้นหาไฟล์',
+              text: 'รีเฟรชรายการ',
               icon: Icons.refresh,
               outlined: true,
-              onPressed: () => widget.fileTransferService.discoverFiles(),
+              onPressed: () => fts.refreshFileList(),
             ),
           ],
         ),
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      itemCount: files.length,
-      itemBuilder: (context, index) => _buildRemoteFileCard(files[index]),
+    return RefreshIndicator(
+      color: AppColors.primary,
+      backgroundColor: AppColors.surface,
+      onRefresh: () => fts.refreshFileList(),
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        itemCount: files.length,
+        itemBuilder: (context, index) =>
+            _buildNetworkFileCard(files[index]),
+      ),
     );
   }
 
-  Widget _buildRemoteFileCard(SharedFile file) {
+  Widget _buildNetworkFileCard(SharedFile file) {
+    final fts = widget.fileTransferService;
+    final isOurs = fts.isSeeder(file.fileHash);
+    final isDownloading = fts.transfers.any((t) =>
+        t.fileHash == file.fileHash &&
+        t.status == TransferStatus.transferring);
+
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       child: GlassCard(
-        borderColor: AppColors.secondary.withValues(alpha: 0.2),
+        borderColor: isOurs
+            ? AppColors.success.withValues(alpha: 0.3)
+            : AppColors.cardBorder,
         child: Row(
           children: [
             Container(
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: AppColors.secondary.withValues(alpha: 0.1),
+                color: (isOurs ? AppColors.success : AppColors.secondary)
+                    .withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(11),
               ),
               child: Icon(
                 _getFileIcon(file.fileName),
-                color: AppColors.secondary,
+                color: isOurs ? AppColors.success : AppColors.secondary,
                 size: 22,
               ),
             ),
@@ -422,23 +330,76 @@ class _FileTransferScreenState extends State<FileTransferScreen>
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  Text(
-                    '${_formatSize(file.fileSize)} • ${file.ownerDisplayName}',
-                    style: const TextStyle(
-                        fontSize: 12, color: AppColors.textMuted),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      Text(
+                        file.fileSizeFormatted,
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.textMuted),
+                      ),
+                      const SizedBox(width: 8),
+                      Icon(Icons.person, size: 12, color: AppColors.textMuted),
+                      const SizedBox(width: 2),
+                      Text(
+                        file.ownerDisplayName,
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.textMuted),
+                      ),
+                      const Spacer(),
+                      // Seeder count
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.cloud_upload,
+                                size: 10, color: AppColors.primary),
+                            const SizedBox(width: 3),
+                            Text(
+                              '${file.onlineSeedersCount} seed',
+                              style: const TextStyle(
+                                fontSize: 10,
+                                color: AppColors.primary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
-            IconButton(
-              onPressed: () {
-                widget.fileTransferService.downloadFile(file);
-                _tabController.animateTo(2); // Switch to transfers tab
-              },
-              icon: const Icon(Icons.download,
-                  color: AppColors.primary, size: 22),
-              tooltip: 'ดาวน์โหลด',
-            ),
+            const SizedBox(width: 8),
+            if (isOurs)
+              const Icon(Icons.check_circle,
+                  color: AppColors.success, size: 22)
+            else if (isDownloading)
+              const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: AppColors.primary,
+                ),
+              )
+            else
+              IconButton(
+                onPressed: () {
+                  fts.downloadFile(file);
+                  _tabController.animateTo(1);
+                },
+                icon: const Icon(Icons.download,
+                    color: AppColors.primary, size: 22),
+                tooltip: 'ดาวน์โหลด',
+              ),
           ],
         ),
       ),
@@ -485,7 +446,7 @@ class _FileTransferScreenState extends State<FileTransferScreen>
     switch (transfer.status) {
       case TransferStatus.waiting:
         statusColor = AppColors.warning;
-        statusText = 'รอ...';
+        statusText = 'รอ seeder...';
         statusIcon = Icons.hourglass_empty;
         break;
       case TransferStatus.transferring:
@@ -544,7 +505,8 @@ class _FileTransferScreenState extends State<FileTransferScreen>
                         overflow: TextOverflow.ellipsis,
                       ),
                       Text(
-                        '${isUpload ? "→" : "←"} ${transfer.peerDisplayName} • '
+                        '${isUpload ? "↑" : "↓"} '
+                        '${transfer.peerDisplayName} • '
                         '${transfer.fileSizeFormatted}',
                         style: const TextStyle(
                             fontSize: 12, color: AppColors.textMuted),
@@ -579,13 +541,12 @@ class _FileTransferScreenState extends State<FileTransferScreen>
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
+                  Text(transfer.speedFormatted,
+                      style: const TextStyle(
+                          fontSize: 11, color: AppColors.textMuted)),
                   Text(
-                    transfer.speedFormatted,
-                    style: const TextStyle(
-                        fontSize: 11, color: AppColors.textMuted),
-                  ),
-                  Text(
-                    '${transfer.completedChunks.length}/${transfer.totalChunks} chunks',
+                    '${transfer.completedChunks.length}/${transfer.totalChunks} chunks '
+                    '• ${transfer.activeSeeders.length} seeders',
                     style: const TextStyle(
                       fontSize: 11,
                       color: AppColors.textMuted,
@@ -596,13 +557,12 @@ class _FileTransferScreenState extends State<FileTransferScreen>
               ),
             ],
 
-            // Error message
+            // Error
             if (transfer.error != null) ...[
               const SizedBox(height: 6),
-              Text(
-                transfer.error!,
-                style: const TextStyle(fontSize: 12, color: AppColors.error),
-              ),
+              Text(transfer.error!,
+                  style:
+                      const TextStyle(fontSize: 12, color: AppColors.error)),
             ],
 
             // Actions
@@ -612,8 +572,8 @@ class _FileTransferScreenState extends State<FileTransferScreen>
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton.icon(
-                  onPressed: () =>
-                      widget.fileTransferService.cancelTransfer(transfer.id),
+                  onPressed: () => widget.fileTransferService
+                      .cancelTransfer(transfer.fileHash),
                   icon: const Icon(Icons.cancel, size: 16),
                   label: const Text('ยกเลิก'),
                   style: TextButton.styleFrom(
@@ -624,7 +584,6 @@ class _FileTransferScreenState extends State<FileTransferScreen>
               ),
             ],
 
-            // Open file / Remove
             if (transfer.status == TransferStatus.completed ||
                 transfer.status == TransferStatus.failed ||
                 transfer.status == TransferStatus.cancelled) ...[
@@ -636,8 +595,7 @@ class _FileTransferScreenState extends State<FileTransferScreen>
                       transfer.localPath != null &&
                       transfer.direction == TransferDirection.download)
                     TextButton.icon(
-                      onPressed: () =>
-                          OpenFile.open(transfer.localPath!),
+                      onPressed: () => OpenFile.open(transfer.localPath!),
                       icon: const Icon(Icons.open_in_new, size: 16),
                       label: const Text('เปิดไฟล์'),
                       style: TextButton.styleFrom(
@@ -646,8 +604,8 @@ class _FileTransferScreenState extends State<FileTransferScreen>
                       ),
                     ),
                   TextButton.icon(
-                    onPressed: () =>
-                        widget.fileTransferService.removeTransfer(transfer.id),
+                    onPressed: () => widget.fileTransferService
+                        .removeTransfer(transfer.fileHash),
                     icon: const Icon(Icons.delete_outline, size: 16),
                     label: const Text('ลบ'),
                     style: TextButton.styleFrom(
@@ -664,8 +622,6 @@ class _FileTransferScreenState extends State<FileTransferScreen>
     );
   }
 
-  // ==================== Helpers ====================
-
   IconData _getFileIcon(String fileName) {
     final ext = fileName.split('.').last.toLowerCase();
     return switch (ext) {
@@ -681,14 +637,5 @@ class _FileTransferScreenState extends State<FileTransferScreen>
       'txt' || 'md' || 'log' => Icons.text_snippet,
       _ => Icons.insert_drive_file,
     };
-  }
-
-  String _formatSize(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 }

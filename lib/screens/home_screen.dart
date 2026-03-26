@@ -57,8 +57,8 @@ class _HomeScreenState extends State<HomeScreen> {
       // Wire up file transfer
       _fileTransferService.configure(
         p2pService: _p2pService,
-        ownVirtualIp: '',
-        displayName: 'Device-${deviceId.substring(0, 8)}',
+        deviceId: deviceId,
+        licenseKey: widget.licenseService.state.licenseKey ?? '',
       );
       _p2pService.onFileMessage = (ip, data) {
         _fileTransferService.handleMessage(ip, data);
@@ -72,6 +72,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _onNetworkChanged() {
+    _fileTransferService.setNetwork(_networkService.currentNetwork?.slug);
     if (mounted) setState(() {});
   }
 
