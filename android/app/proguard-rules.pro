@@ -14,6 +14,9 @@
 -keepattributes *Annotation*
 -keepattributes Signature
 
+# Google Play Core (referenced by Flutter deferred components)
+-dontwarn com.google.android.play.core.**
+
 # Remove debug logging in release
 -assumenosideeffects class android.util.Log {
     public static int d(...);
