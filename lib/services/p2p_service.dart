@@ -93,6 +93,7 @@ class P2pService extends ChangeNotifier {
 
   // Peer data callbacks
   void Function(String virtualIp, Uint8List data)? onPeerData;
+  void Function(String virtualIp, Uint8List data)? onFileMessage;
 
   // Timers
   Timer? _signalPollTimer;
@@ -349,6 +350,12 @@ class P2pService extends ChangeNotifier {
           break;
         }
       }
+      return;
+    }
+
+    // Check if it's a file transfer message
+    if (text.startsWith('LVPN_FILE_')) {
+      onFileMessage?.call(senderIp, data);
       return;
     }
 

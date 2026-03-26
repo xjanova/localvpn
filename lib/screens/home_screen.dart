@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 import '../models/license_state.dart';
+import '../services/file_transfer_service.dart';
 import '../services/license_service.dart';
 import '../services/network_service.dart';
 import '../services/p2p_service.dart';
@@ -10,6 +11,7 @@ import '../theme/app_theme.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/neon_button.dart';
 import '../widgets/status_indicator.dart';
+import 'file_transfer_screen.dart';
 import 'network_list_screen.dart';
 import 'network_detail_screen.dart';
 import 'settings_screen.dart';
@@ -31,6 +33,7 @@ class _HomeScreenState extends State<HomeScreen> {
   late final NetworkService _networkService;
   late final VpnService _vpnService;
   late final P2pService _p2pService;
+  late final FileTransferService _fileTransferService;
 
   @override
   void initState() {
@@ -38,6 +41,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _networkService = NetworkService();
     _vpnService = VpnService();
     _p2pService = P2pService();
+    _fileTransferService = FileTransferService();
 
     final deviceId = widget.licenseService.deviceId;
     if (deviceId != null) {
@@ -49,11 +53,22 @@ class _HomeScreenState extends State<HomeScreen> {
       // Wire up P2P service
       _networkService.attachP2p(_p2pService);
       _vpnService.attachP2p(_p2pService);
+
+      // Wire up file transfer
+      _fileTransferService.configure(
+        p2pService: _p2pService,
+        ownVirtualIp: '',
+        displayName: 'Device-${deviceId.substring(0, 8)}',
+      );
+      _p2pService.onFileMessage = (ip, data) {
+        _fileTransferService.handleMessage(ip, data);
+      };
     }
 
     _networkService.addListener(_onNetworkChanged);
     _vpnService.addListener(_onVpnChanged);
     _p2pService.addListener(_onP2pChanged);
+    _fileTransferService.addListener(_onChanged);
   }
 
   void _onNetworkChanged() {
@@ -68,14 +83,20 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() {});
   }
 
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
     _networkService.removeListener(_onNetworkChanged);
     _vpnService.removeListener(_onVpnChanged);
     _p2pService.removeListener(_onP2pChanged);
+    _fileTransferService.removeListener(_onChanged);
     _networkService.dispose();
     _vpnService.dispose();
     _p2pService.dispose();
+    _fileTransferService.dispose();
     super.dispose();
   }
 
@@ -91,6 +112,10 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             _buildHomeTab(),
             NetworkListScreen(networkService: _networkService),
+            FileTransferScreen(
+              fileTransferService: _fileTransferService,
+              p2pService: _p2pService,
+            ),
             _buildDevicesTab(),
             SettingsScreen(
               licenseService: widget.licenseService,
@@ -116,6 +141,7 @@ class _HomeScreenState extends State<HomeScreen> {
       child: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: (index) => setState(() => _currentIndex = index),
+        type: BottomNavigationBarType.fixed,
         items: const [
           BottomNavigationBarItem(
             icon: Icon(Icons.home_outlined),
@@ -126,6 +152,11 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: Icon(Icons.lan_outlined),
             activeIcon: Icon(Icons.lan),
             label: 'เครือข่าย',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.folder_shared_outlined),
+            activeIcon: Icon(Icons.folder_shared),
+            label: 'ไฟล์',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.devices_outlined),
