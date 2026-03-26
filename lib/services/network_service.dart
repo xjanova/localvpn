@@ -7,11 +7,13 @@ import 'package:http/http.dart' as http;
 import '../database/database_helper.dart';
 import '../models/member.dart';
 import '../models/network.dart';
+import 'p2p_service.dart';
 
 class NetworkService extends ChangeNotifier {
   static const String _baseUrl = 'https://xman4289.com/api/v1/localvpn';
 
   final DatabaseHelper _db = DatabaseHelper();
+  P2pService? _p2pService;
 
   List<VpnNetwork> _publicNetworks = [];
   List<VpnNetwork> get publicNetworks => _publicNetworks;
@@ -40,6 +42,18 @@ class NetworkService extends ChangeNotifier {
         : 'Device-${deviceId.length >= 8 ? deviceId.substring(0, 8) : deviceId}';
     _licenseKey = licenseKey;
   }
+
+  /// Attach a P2P service for direct peer connections
+  void attachP2p(P2pService p2p) {
+    _p2pService = p2p;
+    _p2pService!.configure(
+      deviceId: _deviceId ?? '',
+      licenseKey: _licenseKey ?? '',
+    );
+  }
+
+  /// Get the attached P2P service
+  P2pService? get p2pService => _p2pService;
 
   Map<String, String> get _headers {
     final h = <String, String>{
@@ -342,6 +356,12 @@ class NetworkService extends ChangeNotifier {
 
   void _startHeartbeat() {
     _stopHeartbeat();
+
+    // Start P2P service if attached
+    if (_p2pService != null && _currentNetwork != null) {
+      _p2pService!.start(_currentNetwork!.slug);
+    }
+
     _heartbeatTimer = Timer.periodic(
       const Duration(seconds: 15),
       (_) => _sendHeartbeat(),
@@ -352,22 +372,35 @@ class NetworkService extends ChangeNotifier {
   void _stopHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _p2pService?.stop();
   }
 
   Future<void> _sendHeartbeat() async {
     if (_currentNetwork == null || _deviceId == null) return;
 
     try {
+      final body = <String, dynamic>{
+        'slug': _currentNetwork!.slug,
+        'machine_id': _deviceId,
+        'display_name': _displayName,
+        'license_key': _licenseKey ?? '',
+      };
+
+      // Include P2P endpoint info if available
+      if (_p2pService != null) {
+        if (_p2pService!.publicIp != null) {
+          body['public_ip'] = _p2pService!.publicIp;
+        }
+        if (_p2pService!.publicPort != null) {
+          body['public_port'] = _p2pService!.publicPort;
+        }
+      }
+
       final response = await http
           .post(
             Uri.parse('$_baseUrl/heartbeat'),
             headers: _headers,
-            body: jsonEncode({
-              'slug': _currentNetwork!.slug,
-              'machine_id': _deviceId,
-              'display_name': _displayName,
-              'license_key': _licenseKey ?? '',
-            }),
+            body: jsonEncode(body),
           )
           .timeout(const Duration(seconds: 10));
 
@@ -377,6 +410,10 @@ class NetworkService extends ChangeNotifier {
         if (peers != null) {
           _members =
               peers.map((m) => NetworkMember.fromJson(m)).toList();
+
+          // Feed peer list to P2P service for hole punching
+          _p2pService?.updatePeers(_members);
+
           notifyListeners();
         }
       }

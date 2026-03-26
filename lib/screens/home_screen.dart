@@ -4,6 +4,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../models/license_state.dart';
 import '../services/license_service.dart';
 import '../services/network_service.dart';
+import '../services/p2p_service.dart';
 import '../services/vpn_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass_card.dart';
@@ -29,12 +30,14 @@ class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
   late final NetworkService _networkService;
   late final VpnService _vpnService;
+  late final P2pService _p2pService;
 
   @override
   void initState() {
     super.initState();
     _networkService = NetworkService();
     _vpnService = VpnService();
+    _p2pService = P2pService();
 
     final deviceId = widget.licenseService.deviceId;
     if (deviceId != null) {
@@ -42,10 +45,15 @@ class _HomeScreenState extends State<HomeScreen> {
         deviceId: deviceId,
         licenseKey: widget.licenseService.state.licenseKey,
       );
+
+      // Wire up P2P service
+      _networkService.attachP2p(_p2pService);
+      _vpnService.attachP2p(_p2pService);
     }
 
     _networkService.addListener(_onNetworkChanged);
     _vpnService.addListener(_onVpnChanged);
+    _p2pService.addListener(_onP2pChanged);
   }
 
   void _onNetworkChanged() {
@@ -56,12 +64,18 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() {});
   }
 
+  void _onP2pChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
     _networkService.removeListener(_onNetworkChanged);
     _vpnService.removeListener(_onVpnChanged);
+    _p2pService.removeListener(_onP2pChanged);
     _networkService.dispose();
     _vpnService.dispose();
+    _p2pService.dispose();
     super.dispose();
   }
 
@@ -255,6 +269,27 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
           ),
+          // P2P connection stats
+          if (isConnected && _p2pService.isActive) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                _buildP2pStat(
+                  Icons.swap_horiz,
+                  '${_vpnService.directPeers}',
+                  'P2P ตรง',
+                  AppColors.success,
+                ),
+                const SizedBox(width: 12),
+                _buildP2pStat(
+                  Icons.cloud_outlined,
+                  '${_vpnService.relayPeers}',
+                  'ผ่านเซิร์ฟเวอร์',
+                  AppColors.warning,
+                ),
+              ],
+            ),
+          ],
           if (_networkService.currentNetwork != null) ...[
             const SizedBox(height: 16),
             SizedBox(
@@ -283,6 +318,44 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     ).animate().fadeIn(duration: 400.ms, delay: 100.ms).slideY(begin: 0.1, end: 0);
+  }
+
+  Widget _buildP2pStat(IconData icon, String value, String label, Color color) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: color.withValues(alpha: 0.2)),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: color, size: 18),
+            const SizedBox(width: 8),
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: color.withValues(alpha: 0.7),
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildCurrentNetwork() {
