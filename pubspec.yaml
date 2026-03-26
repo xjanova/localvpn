@@ -1,0 +1,31 @@
+name: localvpn
+description: "LocalVPN - Virtual LAN over the Internet"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  http: ^1.2.0
+  shared_preferences: ^2.3.0
+  sqflite: ^2.3.0
+  path: ^1.9.0
+  path_provider: ^2.1.0
+  device_info_plus: ^10.1.0
+  crypto: ^3.0.3
+  connectivity_plus: ^6.0.0
+  flutter_animate: ^4.5.0
+  google_fonts: ^6.2.0
+  url_launcher: ^6.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
