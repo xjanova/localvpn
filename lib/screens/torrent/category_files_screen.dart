@@ -64,7 +64,7 @@ class _CategoryFilesScreenState extends State<CategoryFilesScreen> {
         !_isLoadingMore &&
         widget.torrentService.pagination.hasMore) {
       _isLoadingMore = true;
-      _loadFiles(append: true).then((_) {
+      _loadFiles(append: true).whenComplete(() {
         _isLoadingMore = false;
       });
     }
@@ -197,6 +197,7 @@ class _CategoryFilesScreenState extends State<CategoryFilesScreen> {
               contentPadding: const EdgeInsets.symmetric(
                   horizontal: 16, vertical: 12),
             ),
+            onChanged: (_) => setState(() {}),
             onSubmitted: (_) => _loadFiles(),
           ).animate().fadeIn(duration: 300.ms, delay: 100.ms),
           const SizedBox(height: 10),
@@ -430,12 +431,12 @@ class _CategoryFilesScreenState extends State<CategoryFilesScreen> {
       ),
     )
         .animate()
-        .fadeIn(duration: 350.ms, delay: (index * 50).ms)
+        .fadeIn(duration: 350.ms, delay: (index.clamp(0, 10) * 50).ms)
         .slideX(
           begin: 0.05,
           end: 0,
           duration: 350.ms,
-          delay: (index * 50).ms,
+          delay: (index.clamp(0, 10) * 50).ms,
         );
   }
 

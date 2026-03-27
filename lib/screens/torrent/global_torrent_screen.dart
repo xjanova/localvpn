@@ -307,6 +307,7 @@ class _GlobalTorrentScreenState extends State<GlobalTorrentScreen> {
             color: AppColors.warning,
             onTap: () {
               SoundService().play(SfxType.tap);
+              HapticFeedback.lightImpact();
               Navigator.of(context).push(
                 CyberPageRoute(
                   builder: (_) => LeaderboardScreen(
@@ -325,6 +326,7 @@ class _GlobalTorrentScreenState extends State<GlobalTorrentScreen> {
             color: AppColors.secondary,
             onTap: () {
               SoundService().play(SfxType.tap);
+              HapticFeedback.lightImpact();
               Navigator.of(context).push(
                 CyberPageRoute(
                   builder: (_) => TrophyScreen(
@@ -343,6 +345,7 @@ class _GlobalTorrentScreenState extends State<GlobalTorrentScreen> {
             color: AppColors.success,
             onTap: () {
               SoundService().play(SfxType.tap);
+              HapticFeedback.lightImpact();
               Navigator.of(context).push(
                 CyberPageRoute(
                   builder: (_) => UserProfileScreen(
@@ -539,13 +542,13 @@ class _GlobalTorrentScreenState extends State<GlobalTorrentScreen> {
                 .animate()
                 .fadeIn(
                   duration: 400.ms,
-                  delay: (200 + index * 60).ms,
+                  delay: (200 + index.clamp(0, 8) * 60).ms,
                 )
                 .scale(
                   begin: const Offset(0.9, 0.9),
                   end: const Offset(1, 1),
                   duration: 400.ms,
-                  delay: (200 + index * 60).ms,
+                  delay: (200 + index.clamp(0, 8) * 60).ms,
                 );
           },
         ),

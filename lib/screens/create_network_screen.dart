@@ -4,20 +4,24 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
+import '../services/license_service.dart';
 import '../services/network_service.dart';
 import '../services/sound_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/cyber_page_route.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/neon_button.dart';
+import 'license_gate_screen.dart';
 import 'network_detail_screen.dart';
 
 class CreateNetworkScreen extends StatefulWidget {
   final NetworkService networkService;
+  final LicenseService licenseService;
 
   const CreateNetworkScreen({
     super.key,
     required this.networkService,
+    required this.licenseService,
   });
 
   @override
@@ -383,86 +387,135 @@ class _CreateNetworkScreenState extends State<CreateNetworkScreen>
   }
 
   Widget _buildMaxMembersSlider() {
-    return GlassCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    final isFree = widget.licenseService.state.isFree;
+    final maxAllowed = widget.licenseService.state.maxNetworkMembers;
+    // Clamp value to prevent slider assertion error
+    _maxMembers = _maxMembers.clamp(2, maxAllowed.toDouble());
+
+    return Column(
+      children: [
+        GlassCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'จำนวนสมาชิกสูงสุด',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-              const Spacer(),
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 150),
-                transitionBuilder: (child, anim) {
-                  return ScaleTransition(scale: anim, child: child);
-                },
-                child: Container(
-                  key: ValueKey(_maxMembers.round()),
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    '${_maxMembers.round()} คน',
-                    style: const TextStyle(
+              Row(
+                children: [
+                  const Text(
+                    'จำนวนสมาชิกสูงสุด',
+                    style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
-                      color: AppColors.primary,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const Spacer(),
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 150),
+                    transitionBuilder: (child, anim) {
+                      return ScaleTransition(scale: anim, child: child);
+                    },
+                    child: Container(
+                      key: ValueKey(_maxMembers.round()),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '${_maxMembers.round()} คน',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              SliderTheme(
+                data: SliderThemeData(
+                  activeTrackColor: AppColors.primary,
+                  inactiveTrackColor: AppColors.surfaceLight,
+                  thumbColor: AppColors.primary,
+                  overlayColor: AppColors.primary.withValues(alpha: 0.1),
+                ),
+                child: Slider(
+                  value: _maxMembers,
+                  min: 2,
+                  max: maxAllowed.toDouble(),
+                  divisions: maxAllowed - 2,
+                  onChanged: (value) {
+                    if (value.round() != _maxMembers.round()) {
+                      HapticFeedback.selectionClick();
+                    }
+                    setState(() => _maxMembers = value);
+                  },
+                ),
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    '2',
+                    style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+                  ),
+                  Text(
+                    '$maxAllowed',
+                    style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        )
+            .animate()
+            .fadeIn(duration: 400.ms, delay: 300.ms)
+            .slideY(begin: 0.1, end: 0),
+        if (isFree) ...[
+          const SizedBox(height: 8),
+          GlassCard(
+            borderColor: AppColors.warning.withValues(alpha: 0.3),
+            onTap: () {
+              SoundService().play(SfxType.tap);
+              Navigator.of(context).push(
+                CyberPageRoute(
+                  builder: (_) => LicenseGateScreen(
+                    licenseService: widget.licenseService,
+                  ),
+                ),
+              );
+            },
+            child: Row(
+              children: [
+                Icon(
+                  Icons.workspace_premium,
+                  color: AppColors.warning,
+                  size: 20,
+                ),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    'อัพเกรด Premium เพื่อรองรับสูงสุด 50 คน/ห้อง',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppColors.warning,
                     ),
                   ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          SliderTheme(
-            data: SliderThemeData(
-              activeTrackColor: AppColors.primary,
-              inactiveTrackColor: AppColors.surfaceLight,
-              thumbColor: AppColors.primary,
-              overlayColor: AppColors.primary.withValues(alpha: 0.1),
+                Icon(
+                  Icons.arrow_forward_ios,
+                  color: AppColors.warning,
+                  size: 14,
+                ),
+              ],
             ),
-            child: Slider(
-              value: _maxMembers,
-              min: 2,
-              max: 50,
-              divisions: 48,
-              onChanged: (value) {
-                if (value.round() != _maxMembers.round()) {
-                  HapticFeedback.selectionClick();
-                }
-                setState(() => _maxMembers = value);
-              },
-            ),
-          ),
-          const Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                '2',
-                style: TextStyle(fontSize: 11, color: AppColors.textMuted),
-              ),
-              Text(
-                '50',
-                style: TextStyle(fontSize: 11, color: AppColors.textMuted),
-              ),
-            ],
-          ),
+          ).animate().fadeIn(duration: 400.ms, delay: 350.ms),
         ],
-      ),
-    )
-        .animate()
-        .fadeIn(duration: 400.ms, delay: 300.ms)
-        .slideY(begin: 0.1, end: 0);
+      ],
+    );
   }
 
   Widget _buildCreateButton() {

@@ -193,7 +193,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             index: _currentIndex,
             children: [
               _buildHomeTab(),
-              NetworkListScreen(networkService: _networkService),
+              NetworkListScreen(
+                networkService: _networkService,
+                licenseService: widget.licenseService,
+              ),
               FileTransferScreen(
                 fileTransferService: _fileTransferService,
                 p2pService: _p2pService,

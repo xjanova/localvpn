@@ -137,7 +137,12 @@ class _KycVerificationScreenState extends State<KycVerificationScreen> {
     }
 
     // Check age >= 18
-    final age = DateTime.now().difference(_birthDate!).inDays ~/ 365;
+    final now = DateTime.now();
+    int age = now.year - _birthDate!.year;
+    if (now.month < _birthDate!.month ||
+        (now.month == _birthDate!.month && now.day < _birthDate!.day)) {
+      age--;
+    }
     if (age < 18) {
       SoundService().play(SfxType.error);
       ScaffoldMessenger.of(context).showSnackBar(

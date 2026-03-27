@@ -315,13 +315,13 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
               .animate()
               .fadeIn(
                 duration: 350.ms,
-                delay: (index * 40).ms,
+                delay: (index.clamp(0, 12) * 40).ms,
               )
               .slideX(
                 begin: 0.05,
                 end: 0,
                 duration: 350.ms,
-                delay: (index * 40).ms,
+                delay: (index.clamp(0, 12) * 40).ms,
               );
         },
       ),

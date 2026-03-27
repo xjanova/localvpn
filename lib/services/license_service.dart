@@ -483,6 +483,16 @@ class LicenseService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Set free mode for users without a license.
+  void setFreeMode() {
+    _state = LicenseState(
+      status: LicenseStatus.free,
+      licenseType: 'free',
+      deviceId: _deviceId,
+    );
+    notifyListeners();
+  }
+
   // Device-specific XOR encryption for local storage
   Future<List<int>> _deriveKey() async {
     final prefs = await SharedPreferences.getInstance();

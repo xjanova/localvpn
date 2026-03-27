@@ -37,8 +37,10 @@ class TorrentService extends ChangeNotifier {
   String? _kycStatus;
   String? get kycStatus => _kycStatus;
 
-  bool _isLoading = false;
-  bool get isLoading => _isLoading;
+  bool _isCategoriesLoading = false;
+  bool _isFilesLoading = false;
+  bool _isLeaderboardLoading = false;
+  bool get isLoading => _isCategoriesLoading || _isFilesLoading || _isLeaderboardLoading;
 
   String? _error;
   String? get error => _error;
@@ -55,7 +57,7 @@ class TorrentService extends ChangeNotifier {
 
   /// Fetch all categories.
   Future<void> fetchCategories() async {
-    _isLoading = true;
+    _isCategoriesLoading = true;
     _error = null;
     notifyListeners();
 
@@ -80,7 +82,7 @@ class TorrentService extends ChangeNotifier {
       debugPrint('TorrentService.fetchCategories error: $e');
     }
 
-    _isLoading = false;
+    _isCategoriesLoading = false;
     notifyListeners();
   }
 
@@ -92,7 +94,7 @@ class TorrentService extends ChangeNotifier {
     bool append = false,
   }) async {
     if (!append) {
-      _isLoading = true;
+      _isFilesLoading = true;
       _error = null;
       notifyListeners();
     }
@@ -134,7 +136,7 @@ class TorrentService extends ChangeNotifier {
       debugPrint('TorrentService.fetchFiles error: $e');
     }
 
-    _isLoading = false;
+    _isFilesLoading = false;
     notifyListeners();
   }
 
@@ -174,7 +176,7 @@ class TorrentService extends ChangeNotifier {
 
   /// Fetch leaderboard.
   Future<void> fetchLeaderboard() async {
-    _isLoading = true;
+    _isLeaderboardLoading = true;
     _error = null;
     notifyListeners();
 
@@ -194,7 +196,7 @@ class TorrentService extends ChangeNotifier {
       debugPrint('TorrentService.fetchLeaderboard error: $e');
     }
 
-    _isLoading = false;
+    _isLeaderboardLoading = false;
     notifyListeners();
   }
 

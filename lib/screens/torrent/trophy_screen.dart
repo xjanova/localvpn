@@ -179,8 +179,29 @@ class _TrophyScreenState extends State<TrophyScreen> {
     final allTrophies = widget.torrentService.allTrophies;
 
     if (allTrophies.isEmpty) {
-      return const Center(
-        child: CircularProgressIndicator(color: AppColors.primary),
+      if (widget.torrentService.isLoading) {
+        return const Center(
+          child: CircularProgressIndicator(color: AppColors.primary),
+        );
+      }
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.emoji_events, size: 64, color: AppColors.textMuted),
+            const SizedBox(height: 16),
+            const Text(
+              'ไม่สามารถโหลดข้อมูลได้',
+              style: TextStyle(fontSize: 16, color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 12),
+            TextButton.icon(
+              onPressed: _loadData,
+              icon: const Icon(Icons.refresh),
+              label: const Text('ลองใหม่'),
+            ),
+          ],
+        ),
       );
     }
 

@@ -5,7 +5,6 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'services/license_service.dart';
 import 'services/sound_service.dart';
 import 'theme/app_theme.dart';
-import 'screens/license_gate_screen.dart';
 import 'screens/home_screen.dart';
 import 'widgets/cyber_page_route.dart';
 
@@ -109,22 +108,17 @@ class _SplashScreenState extends State<SplashScreen>
 
     if (!mounted) return;
 
+    // Free model: always allow entry. If no license found, set free status.
     final state = _licenseService.state;
-
-    if (state.isValid) {
-      Navigator.of(context).pushReplacement(
-        CyberPageRoute(
-          builder: (_) => HomeScreen(licenseService: _licenseService),
-        ),
-      );
-    } else {
-      Navigator.of(context).pushReplacement(
-        CyberPageRoute(
-          builder: (_) =>
-              LicenseGateScreen(licenseService: _licenseService),
-        ),
-      );
+    if (!state.isValid) {
+      _licenseService.setFreeMode();
     }
+
+    Navigator.of(context).pushReplacement(
+      CyberPageRoute(
+        builder: (_) => HomeScreen(licenseService: _licenseService),
+      ),
+    );
   }
 
   @override

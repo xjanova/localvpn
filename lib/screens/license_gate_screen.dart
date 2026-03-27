@@ -28,7 +28,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
   final TextEditingController _licenseController = TextEditingController();
   bool _showLicenseInput = false;
   bool _activating = false;
-  bool _startingDemo = false;
+  bool _enteringFree = false;
 
   @override
   void dispose() {
@@ -63,34 +63,6 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
             'ไม่สามารถเปิดใช้งาน License ได้',
       );
       widget.licenseService.clearError();
-    }
-  }
-
-  Future<void> _startDemo() async {
-    if (_startingDemo) return;
-    setState(() => _startingDemo = true);
-
-    try {
-      final success = await widget.licenseService.startDemo();
-
-      if (!mounted) return;
-
-      if (success) {
-        SoundService().play(SfxType.coin);
-        HapticFeedback.mediumImpact();
-        _navigateToHome();
-      } else {
-        SoundService().play(SfxType.error);
-        _showError(
-          widget.licenseService.state.errorMessage ??
-              'ไม่สามารถเริ่มทดลองใช้งานได้',
-        );
-        widget.licenseService.clearError();
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _startingDemo = false);
-      }
     }
   }
 
@@ -241,12 +213,36 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
   Widget _buildPricingCards() {
     return Column(
       children: [
+        // Free plan card
+        _buildFreePlanCard(),
+        const SizedBox(height: 8),
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8),
+          child: Row(
+            children: [
+              Expanded(child: Divider(color: AppColors.cardBorder)),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 12),
+                child: Text(
+                  'อัพเกรด Premium',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textMuted,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Expanded(child: Divider(color: AppColors.cardBorder)),
+            ],
+          ),
+        ),
         _buildPricingCard(
           title: 'รายเดือน',
           price: '399',
           period: 'บาท/เดือน',
           plan: 'monthly',
           color: AppColors.primary,
+          features: 'สมาชิกสูงสุด 50 คน/ห้อง',
           index: 0,
         ),
         _buildPricingCard(
@@ -256,6 +252,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
           plan: 'yearly',
           color: AppColors.secondary,
           badge: 'ประหยัด 48%',
+          features: 'สมาชิกสูงสุด 50 คน/ห้อง',
           index: 1,
         ),
         _buildPricingCard(
@@ -265,9 +262,97 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
           plan: 'lifetime',
           color: AppColors.warning,
           badge: 'คุ้มที่สุด',
+          features: 'สมาชิกสูงสุด 50 คน/ห้อง',
           index: 2,
         ),
       ],
+    );
+  }
+
+  Widget _buildFreePlanCard() {
+    return GlassCard(
+      borderColor: AppColors.success.withValues(alpha: 0.3),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppColors.success.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Text(
+                  'ฟรี',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.success,
+                  ),
+                ),
+              ),
+              const Spacer(),
+              const Icon(Icons.check_circle, color: AppColors.success, size: 20),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                '0',
+                style: TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              SizedBox(width: 4),
+              Padding(
+                padding: EdgeInsets.only(bottom: 4),
+                child: Text(
+                  'บาท ตลอดไป',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textMuted,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _buildFeatureRow(Icons.check, 'Global Torrent ใช้ได้เต็มรูปแบบ', true),
+          _buildFeatureRow(Icons.check, 'สร้าง/เข้าร่วมเครือข่าย VPN', true),
+          _buildFeatureRow(Icons.check, 'แชร์ไฟล์ในเครือข่าย', true),
+          _buildFeatureRow(Icons.remove, 'จำกัดสมาชิกสูงสุด 5 คน/ห้อง', false),
+        ],
+      ),
+    ).animate().fadeIn(duration: 400.ms, delay: 200.ms);
+  }
+
+  Widget _buildFeatureRow(IconData icon, String text, bool included) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          Icon(
+            icon,
+            size: 14,
+            color: included ? AppColors.success : AppColors.warning,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                fontSize: 12,
+                color: included ? AppColors.textSecondary : AppColors.warning,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -278,6 +363,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
     required String plan,
     required Color color,
     String? badge,
+    String? features,
     int index = 0,
   }) {
     return GlassCard(
@@ -354,6 +440,16 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
                     ),
                   ],
                 ),
+                if (features != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    features,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppColors.textMuted,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -375,34 +471,38 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
             delay: (300 + index * 100).ms);
   }
 
+  void _enterFreeMode() {
+    if (_enteringFree) return;
+    _enteringFree = true;
+    widget.licenseService.setFreeMode();
+    SoundService().play(SfxType.coin);
+    HapticFeedback.mediumImpact();
+    _navigateToHome();
+  }
+
   Widget _buildActionButtons() {
     return Column(
       children: [
         SizedBox(
           width: double.infinity,
           child: NeonButton(
-            text: 'มี License Key แล้ว',
-            icon: Icons.key,
-            onPressed: () {
-              SoundService().play(SfxType.notification);
-              setState(() => _showLicenseInput = true);
-            },
+            text: 'เข้าใช้ฟรี',
+            icon: Icons.play_arrow,
+            color: AppColors.success,
+            onPressed: _enterFreeMode,
           ),
         ).animate().fadeIn(duration: 400.ms, delay: 700.ms),
         const SizedBox(height: 12),
         SizedBox(
           width: double.infinity,
           child: NeonButton(
-            text: 'ทดลองใช้ฟรี',
-            icon: Icons.play_arrow,
+            text: 'มี License Key แล้ว',
+            icon: Icons.key,
             outlined: true,
-            color: AppColors.secondary,
-            isLoading:
-                _startingDemo || widget.licenseService.isProcessing,
-            onPressed:
-                (_startingDemo || widget.licenseService.isProcessing)
-                    ? null
-                    : _startDemo,
+            onPressed: () {
+              SoundService().play(SfxType.notification);
+              setState(() => _showLicenseInput = true);
+            },
           ),
         ).animate().fadeIn(duration: 400.ms, delay: 800.ms),
       ],

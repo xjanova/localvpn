@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 import '../models/network.dart';
+import '../services/license_service.dart';
 import '../services/network_service.dart';
 import '../services/sound_service.dart';
 import '../theme/app_theme.dart';
@@ -13,10 +14,12 @@ import 'network_detail_screen.dart';
 
 class NetworkListScreen extends StatefulWidget {
   final NetworkService networkService;
+  final LicenseService licenseService;
 
   const NetworkListScreen({
     super.key,
     required this.networkService,
+    required this.licenseService,
   });
 
   @override
@@ -205,6 +208,7 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
                         CyberPageRoute(
                           builder: (_) => CreateNetworkScreen(
                             networkService: widget.networkService,
+                            licenseService: widget.licenseService,
                           ),
                         ),
                       );
@@ -335,6 +339,7 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
                 CyberPageRoute(
                   builder: (_) => CreateNetworkScreen(
                     networkService: widget.networkService,
+                    licenseService: widget.licenseService,
                   ),
                 ),
               );

@@ -67,7 +67,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           style: TextStyle(color: AppColors.error),
         ),
         content: const Text(
-          'ต้องการยกเลิก License ใช่หรือไม่? คุณจะต้องเปิดใช้งานใหม่อีกครั้ง',
+          'ต้องการยกเลิก License ใช่หรือไม่? คุณจะกลับไปใช้แพ็กเกจฟรี (จำกัด 5 คน/ห้อง)',
           style: TextStyle(color: AppColors.textSecondary),
         ),
         actions: [
@@ -97,18 +97,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     if (confirmed != true) return;
 
-    await widget.licenseService.deactivate();
+    try {
+      await widget.licenseService.deactivate();
+    } catch (_) {
+      // Deactivation may fail on network error; still switch to free locally
+    }
 
     if (!mounted) return;
 
-    Navigator.of(context).pushAndRemoveUntil(
-      CyberPageRoute(
-        builder: (_) => LicenseGateScreen(
-          licenseService: widget.licenseService,
-        ),
-      ),
-      (_) => false,
-    );
+    // Go back to free mode instead of blocking
+    widget.licenseService.setFreeMode();
+    setState(() {});
   }
 
   void _copyDeviceId() {
@@ -165,6 +164,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _buildLicenseSection() {
     final license = widget.licenseService.state;
+    final isPaid = license.isPaid;
+    final statusColor = isPaid ? AppColors.primary : AppColors.success;
 
     return GlassCard(
       child: Column(
@@ -176,37 +177,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 width: 40,
                 height: 40,
                 decoration: BoxDecoration(
-                  color: license.isValid
-                      ? AppColors.success.withValues(alpha: 0.1)
-                      : AppColors.warning.withValues(alpha: 0.1),
+                  color: statusColor.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(
-                  license.isValid ? Icons.verified : Icons.warning_amber,
-                  color: license.isValid
-                      ? AppColors.success
-                      : AppColors.warning,
+                  isPaid ? Icons.workspace_premium : Icons.person,
+                  color: statusColor,
                   size: 20,
                 ),
               ),
               const SizedBox(width: 12),
-              const Expanded(
-                child: Text(
-                  'License',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'แพ็กเกจ',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    Text(
+                      'สมาชิกสูงสุด ${license.maxNetworkMembers} คน/ห้อง',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+                  ],
                 ),
               ),
               Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: license.isValid
-                      ? AppColors.success.withValues(alpha: 0.1)
-                      : AppColors.warning.withValues(alpha: 0.1),
+                  color: statusColor.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
@@ -214,9 +221,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: license.isValid
-                        ? AppColors.success
-                        : AppColors.warning,
+                    color: statusColor,
                   ),
                 ),
               ),
@@ -241,10 +246,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: _buildInfoRow(
               'Device ID',
               license.deviceId != null
-                  ? '${license.deviceId!.substring(0, 16)}... (แตะเพื่อคัดลอก)'
+                  ? '${license.deviceId!.substring(0, license.deviceId!.length.clamp(0, 16))}... (แตะเพื่อคัดลอก)'
                   : 'ไม่ทราบ',
             ),
           ),
+          if (license.isFree) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              height: 36,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  SoundService().play(SfxType.tap);
+                  Navigator.of(context).push(
+                    CyberPageRoute(
+                      builder: (_) => LicenseGateScreen(
+                        licenseService: widget.licenseService,
+                      ),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.workspace_premium, size: 16),
+                label: const Text(
+                  'อัพเกรด Premium',
+                  style: TextStyle(fontSize: 13),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.warning,
+                  foregroundColor: AppColors.background,
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     ).animate().fadeIn(duration: 400.ms, delay: 100.ms);
@@ -534,6 +567,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildLogoutButton() {
+    final license = widget.licenseService.state;
+    // Only show deactivate button for paid/trial users
+    if (license.isFree) return const SizedBox.shrink();
+
     return SizedBox(
       width: double.infinity,
       child: NeonButton(

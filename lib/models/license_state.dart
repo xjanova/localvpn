@@ -1,5 +1,6 @@
 enum LicenseStatus {
   checking,
+  free,
   trial,
   active,
   expired,
@@ -55,35 +56,49 @@ class LicenseState {
   }
 
   bool get isValid =>
+      status == LicenseStatus.active ||
+      status == LicenseStatus.trial ||
+      status == LicenseStatus.free;
+
+  bool get isPaid =>
       status == LicenseStatus.active || status == LicenseStatus.trial;
+
+  bool get isFree =>
+      status == LicenseStatus.free || status == LicenseStatus.none;
+
+  int get maxNetworkMembers => isPaid ? 50 : 5;
 
   String get statusDisplayName {
     switch (status) {
       case LicenseStatus.checking:
         return 'กำลังตรวจสอบ...';
+      case LicenseStatus.free:
+        return 'ฟรี';
       case LicenseStatus.trial:
         return 'ทดลองใช้งาน';
       case LicenseStatus.active:
-        return 'ใช้งานอยู่';
+        return 'Premium';
       case LicenseStatus.expired:
         return 'หมดอายุ';
       case LicenseStatus.none:
-        return 'ไม่มี License';
+        return 'ฟรี';
     }
   }
 
   String get typeDisplayName {
     switch (licenseType) {
+      case 'free':
+        return 'ฟรี (จำกัด 5 คน/ห้อง)';
       case 'demo':
         return 'ทดลองใช้';
       case 'monthly':
-        return 'รายเดือน';
+        return 'Premium รายเดือน';
       case 'yearly':
-        return 'รายปี';
+        return 'Premium รายปี';
       case 'lifetime':
-        return 'ตลอดชีพ';
+        return 'Premium ตลอดชีพ';
       default:
-        return licenseType ?? 'ไม่ทราบ';
+        return licenseType ?? 'ฟรี';
     }
   }
 }

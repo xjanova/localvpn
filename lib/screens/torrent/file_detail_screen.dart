@@ -217,7 +217,9 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
                     _buildMetaRow('Chunk Size', '${file.chunkSize} bytes'),
                   if (file.totalChunks != null)
                     _buildMetaRow('Total Chunks', '${file.totalChunks}'),
-                  _buildMetaRow('Hash', '${file.fileHash.substring(0, 16)}...'),
+                  _buildMetaRow('Hash', file.fileHash.length >= 16
+                    ? '${file.fileHash.substring(0, 16)}...'
+                    : file.fileHash),
                   if (file.category != null)
                     _buildMetaRow('หมวดหมู่', file.category!.name),
                   if (file.createdAt != null)
