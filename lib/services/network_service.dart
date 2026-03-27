@@ -171,7 +171,7 @@ class NetworkService extends ChangeNotifier {
         return true;
       } else {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
-        _error = data['message'] as String? ?? 'ไม่สามารถสร้างเครือข่ายได้';
+        _error = data['error'] as String? ?? data['message'] as String? ?? 'ไม่สามารถสร้างเครือข่ายได้';
         notifyListeners();
         return false;
       }
@@ -353,9 +353,15 @@ class NetworkService extends ChangeNotifier {
 
   Future<void> getMembers(String slug) async {
     try {
+      final uri = Uri.parse('$_baseUrl/networks/${Uri.encodeComponent(slug)}/members').replace(
+        queryParameters: {
+          'machine_id': _deviceId ?? '',
+          'license_key': _licenseKey ?? '',
+        },
+      );
       final response = await http
           .get(
-            Uri.parse('$_baseUrl/networks/${Uri.encodeComponent(slug)}/members'),
+            uri,
             headers: _headers,
           )
           .timeout(const Duration(seconds: 15));
