@@ -1,10 +1,12 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:open_file/open_file.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 class UpdateService extends ChangeNotifier {
   static const String _checkUpdateUrl =
@@ -28,6 +30,15 @@ class UpdateService extends ChangeNotifier {
 
   bool _isChecking = false;
   bool get isChecking => _isChecking;
+
+  bool _isDownloading = false;
+  bool get isDownloading => _isDownloading;
+
+  double _downloadProgress = 0.0;
+  double get downloadProgress => _downloadProgress;
+
+  String? _downloadError;
+  String? get downloadError => _downloadError;
 
   String get currentVersion => _currentVersion;
 
@@ -87,11 +98,80 @@ class UpdateService extends ChangeNotifier {
   }
 
   Future<void> downloadUpdate() async {
-    if (_downloadUrl == null) return;
+    if (_downloadUrl == null || _isDownloading) return;
 
-    final uri = Uri.tryParse(_downloadUrl!);
-    if (uri != null && await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    _isDownloading = true;
+    _downloadProgress = 0.0;
+    _downloadError = null;
+    notifyListeners();
+
+    try {
+      final uri = Uri.parse(_downloadUrl!);
+      final client = http.Client();
+      final request = http.Request('GET', uri);
+      final streamedResponse = await client.send(request);
+
+      if (streamedResponse.statusCode != 200) {
+        throw HttpException(
+          'ดาวน์โหลดล้มเหลว (${streamedResponse.statusCode})',
+        );
+      }
+
+      final contentLength = streamedResponse.contentLength ?? 0;
+      final fileName = 'LocalVPN-${_latestVersion ?? "update"}.apk';
+
+      // Save to app's external storage directory
+      final dir = await getExternalStorageDirectory();
+      if (dir == null) {
+        throw const FileSystemException('ไม่สามารถเข้าถึง storage ได้');
+      }
+
+      final filePath = '${dir.path}/$fileName';
+      final file = File(filePath);
+
+      // Delete old file if exists
+      if (await file.exists()) {
+        await file.delete();
+      }
+
+      final sink = file.openWrite();
+      int received = 0;
+
+      await for (final chunk in streamedResponse.stream) {
+        sink.add(chunk);
+        received += chunk.length;
+
+        if (contentLength > 0) {
+          _downloadProgress = received / contentLength;
+        } else {
+          // Unknown total: show indeterminate-like progress
+          _downloadProgress = -1;
+        }
+        notifyListeners();
+      }
+
+      await sink.flush();
+      await sink.close();
+
+      _downloadProgress = 1.0;
+      _isDownloading = false;
+      notifyListeners();
+
+      client.close();
+
+      // Open the APK to trigger install prompt
+      await OpenFile.open(filePath);
+    } catch (e) {
+      _downloadError = e.toString().replaceFirst('Exception: ', '');
+      _isDownloading = false;
+      _downloadProgress = 0.0;
+      notifyListeners();
+      debugPrint('Download update error: $e');
     }
+  }
+
+  void clearError() {
+    _downloadError = null;
+    notifyListeners();
   }
 }

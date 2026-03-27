@@ -369,6 +369,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     color: AppColors.primary,
                   ),
                 )
+              else if (_updateService.isDownloading)
+                const SizedBox.shrink()
               else if (_updateService.updateAvailable)
                 SizedBox(
                   height: 32,
@@ -402,6 +404,106 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
             ],
           ),
+          // Download progress bar
+          if (_updateService.isDownloading) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: _updateService.downloadProgress < 0
+                        ? const LinearProgressIndicator(
+                            color: AppColors.primary,
+                            backgroundColor: AppColors.surfaceLight,
+                          )
+                        : LinearProgressIndicator(
+                            value: _updateService.downloadProgress,
+                            color: AppColors.primary,
+                            backgroundColor: AppColors.surfaceLight,
+                          ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _updateService.downloadProgress < 0
+                      ? 'กำลังโหลด...'
+                      : '${(_updateService.downloadProgress * 100).toStringAsFixed(0)}%',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textMuted,
+                  ),
+                ),
+              ],
+            ),
+          ],
+          // Download error
+          if (_updateService.downloadError != null) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(Icons.error_outline, color: AppColors.error, size: 16),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    _updateService.downloadError!,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.error,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () {
+                    _updateService.clearError();
+                    _updateService.downloadUpdate();
+                  },
+                  child: const Text(
+                    'ลองใหม่',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          // Changelog
+          if (_updateService.updateAvailable &&
+              _updateService.changelog != null &&
+              _updateService.changelog!.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceLight.withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'มีอะไรใหม่:',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _updateService.changelog!,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppColors.textMuted,
+                      height: 1.4,
+                    ),
+                    maxLines: 5,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     ).animate().fadeIn(duration: 400.ms, delay: 200.ms);

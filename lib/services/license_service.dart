@@ -83,8 +83,10 @@ class LicenseService extends ChangeNotifier {
 
     if (Platform.isAndroid) {
       final android = await deviceInfo.androidInfo;
+      // Note: Do NOT include android.fingerprint — it changes on OS updates,
+      // which would break license recovery via checkMachine().
       rawId =
-          '${android.brand}|${android.model}|${android.id}|${android.fingerprint}';
+          '${android.brand}|${android.model}|${android.id}';
     } else if (Platform.isIOS) {
       final ios = await deviceInfo.iosInfo;
       rawId =
