@@ -2,15 +2,17 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class UpdateService extends ChangeNotifier {
   static const String _checkUpdateUrl =
       'https://xman4289.com/api/v1/product/localvpn/update/check';
-  static const String _currentVersion = '1.0.0';
   static const String _prefLastUpdateCheck = 'last_update_check';
   static const Duration _checkInterval = Duration(hours: 6);
+
+  String _currentVersion = '1.0.0';
 
   bool _updateAvailable = false;
   bool get updateAvailable => _updateAvailable;
@@ -31,6 +33,14 @@ class UpdateService extends ChangeNotifier {
 
   Future<void> checkForUpdate({bool force = false}) async {
     if (_isChecking) return;
+
+    // Get real version from package info
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      _currentVersion = packageInfo.version;
+    } catch (_) {
+      // Fallback to default
+    }
 
     if (!force) {
       final prefs = await SharedPreferences.getInstance();

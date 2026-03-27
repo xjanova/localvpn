@@ -253,6 +253,59 @@ class NetworkService extends ChangeNotifier {
     }
   }
 
+  /// Join network with a pre-hashed password (for auto-rejoin from saved networks)
+  Future<bool> joinNetworkRaw(String slug, {String? passwordHash}) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final body = <String, dynamic>{
+        'slug': slug,
+        'machine_id': _deviceId,
+        'display_name': _displayName,
+        'license_key': _licenseKey ?? '',
+      };
+
+      if (passwordHash != null && passwordHash.isNotEmpty) {
+        body['password'] = passwordHash;
+      }
+
+      final response = await http
+          .post(
+            Uri.parse('$_baseUrl/networks/join'),
+            headers: _headers,
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final network = VpnNetwork.fromJson(
+            data['network'] as Map<String, dynamic>? ?? data);
+
+        _currentNetwork = network;
+
+        final memberData = data['member'] as Map<String, dynamic>?;
+        if (memberData != null) {
+          _ownVirtualIp = memberData['virtual_ip'] as String?;
+        }
+
+        await _db.updateLastConnected(slug);
+
+        _startHeartbeat();
+        notifyListeners();
+        return true;
+      }
+    } catch (e) {
+      debugPrint('Auto-rejoin error: $e');
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+    return false;
+  }
+
   Future<bool> leaveNetwork(String slug) async {
     _isLoading = true;
     _error = null;

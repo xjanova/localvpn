@@ -69,10 +69,33 @@ class _HomeScreenState extends State<HomeScreen> {
     _vpnService.addListener(_onVpnChanged);
     _p2pService.addListener(_onP2pChanged);
     _fileTransferService.addListener(_onChanged);
+
+    // Try to auto-rejoin last used network
+    _autoRejoinLastNetwork();
+  }
+
+  Future<void> _autoRejoinLastNetwork() async {
+    final saved = await _networkService.getSavedNetworks();
+    if (saved.isNotEmpty) {
+      final last = saved.first;
+      final slug = last['slug'] as String?;
+      final passwordHash = last['password_hash'] as String?;
+      if (slug != null) {
+        // Re-join sends the already-hashed password
+        await _networkService.joinNetworkRaw(
+          slug,
+          passwordHash: passwordHash,
+        );
+      }
+    }
   }
 
   void _onNetworkChanged() {
-    _fileTransferService.setNetwork(_networkService.currentNetwork?.slug);
+    final slug = _networkService.currentNetwork?.slug;
+    _fileTransferService.setNetwork(slug);
+    if (slug != null) {
+      _fileTransferService.refreshFileList();
+    }
     if (mounted) setState(() {});
   }
 
