@@ -451,7 +451,7 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
                     .animate()
                     .fadeIn(
                       duration: 300.ms,
-                      delay: (300 + index * 50).ms,
+                      delay: (300 + index.clamp(0, 10) * 50).ms,
                     )
                     .slideX(begin: 0.05, end: 0);
               }),

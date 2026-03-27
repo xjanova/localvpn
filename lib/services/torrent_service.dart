@@ -88,17 +88,12 @@ class TorrentService extends ChangeNotifier {
   /// Discover own public IP via STUN-like endpoint.
   Future<void> discoverPublicIp() async {
     try {
-      final uri = Uri.parse('$_baseUrl/stun');
-      final response = await http
-          .post(
-            uri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'machine_id': _machineId ?? '',
-              'license_key': _licenseKey ?? '',
-            }),
-          )
-          .timeout(const Duration(seconds: 10));
+      final uri = Uri.parse('$_baseUrl/stun').replace(queryParameters: {
+        'machine_id': _machineId ?? '',
+        'license_key': _licenseKey ?? '',
+      });
+      final response =
+          await http.get(uri).timeout(const Duration(seconds: 10));
 
       final data = _parseResponse(response);
       if (data != null && data['success'] == true) {
@@ -118,7 +113,11 @@ class TorrentService extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final uri = Uri.parse('$_baseUrl/torrent/categories');
+      final uri = Uri.parse('$_baseUrl/torrent/categories').replace(
+        queryParameters: {
+          if (_machineId != null) 'machine_id': _machineId!,
+        },
+      );
       final response =
           await http.get(uri).timeout(const Duration(seconds: 15));
       final data = _parseResponse(response);
