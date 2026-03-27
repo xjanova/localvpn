@@ -105,9 +105,10 @@ class UpdateService extends ChangeNotifier {
     _downloadError = null;
     notifyListeners();
 
+    http.Client? client;
     try {
       final uri = Uri.parse(_downloadUrl!);
-      final client = http.Client();
+      client = http.Client();
       final request = http.Request('GET', uri);
       final streamedResponse = await client.send(request);
 
@@ -162,6 +163,7 @@ class UpdateService extends ChangeNotifier {
       // Open the APK to trigger install prompt
       await OpenFile.open(filePath);
     } catch (e) {
+      client?.close();
       _downloadError = e.toString().replaceFirst('Exception: ', '');
       _isDownloading = false;
       _downloadProgress = 0.0;

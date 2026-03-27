@@ -97,8 +97,8 @@ class TorrentService extends ChangeNotifier {
 
       final data = _parseResponse(response);
       if (data != null && data['success'] == true) {
-        _publicIp = data['public_ip'] as String?;
-        _publicPort = data['public_port'] as int?;
+        _publicIp = data['ip'] as String?;
+        _publicPort = data['port'] as int?;
       }
     } catch (e) {
       debugPrint('TorrentService.discoverPublicIp error: $e');
@@ -160,6 +160,7 @@ class TorrentService extends ChangeNotifier {
         'sort': sort,
         'page': page.toString(),
         if (search != null && search.isNotEmpty) 'search': search,
+        if (_machineId != null) 'machine_id': _machineId!,
       };
 
       final uri = Uri.parse('$_baseUrl/torrent/files/$categorySlug')
