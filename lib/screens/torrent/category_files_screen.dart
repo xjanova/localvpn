@@ -9,6 +9,7 @@ import '../../theme/app_theme.dart';
 import '../../widgets/cyber_page_route.dart';
 import '../../widgets/glass_card.dart';
 import 'file_detail_screen.dart';
+import 'upload_file_screen.dart';
 
 class CategoryFilesScreen extends StatefulWidget {
   final TorrentService torrentService;
@@ -82,6 +83,23 @@ class _CategoryFilesScreenState extends State<CategoryFilesScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
+      floatingActionButton: FloatingActionButton(
+        backgroundColor: AppColors.primary,
+        onPressed: () {
+          SoundService().play(SfxType.tap);
+          HapticFeedback.lightImpact();
+          Navigator.of(context).push(
+            CyberPageRoute(
+              builder: (_) => UploadFileScreen(
+                torrentService: widget.torrentService,
+                categories: widget.torrentService.categories,
+                initialCategory: widget.category,
+              ),
+            ),
+          );
+        },
+        child: const Icon(Icons.upload_file, color: Colors.white),
+      ),
       body: Container(
         decoration: BoxDecoration(gradient: AppTheme.backgroundGradient),
         child: SafeArea(

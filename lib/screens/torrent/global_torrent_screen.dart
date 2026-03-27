@@ -10,6 +10,7 @@ import '../../widgets/glass_card.dart';
 import 'category_files_screen.dart';
 import 'leaderboard_screen.dart';
 import 'trophy_screen.dart';
+import 'upload_file_screen.dart';
 import 'user_profile_screen.dart';
 
 class GlobalTorrentScreen extends StatefulWidget {
@@ -350,6 +351,26 @@ class _GlobalTorrentScreenState extends State<GlobalTorrentScreen> {
                 CyberPageRoute(
                   builder: (_) => UserProfileScreen(
                     torrentService: widget.torrentService,
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _buildActionButton(
+            icon: Icons.upload_file,
+            label: 'อัพโหลด',
+            color: const Color(0xFFFF6B6B),
+            onTap: () {
+              SoundService().play(SfxType.tap);
+              HapticFeedback.lightImpact();
+              Navigator.of(context).push(
+                CyberPageRoute(
+                  builder: (_) => UploadFileScreen(
+                    torrentService: widget.torrentService,
+                    categories: widget.torrentService.categories,
                   ),
                 ),
               );

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -8,10 +9,22 @@ import '../models/bt_models.dart';
 /// Service for the Global BitTorrent system API calls.
 class TorrentService extends ChangeNotifier {
   static const String _baseUrl = 'https://xman4289.com/api/v1/localvpn';
+  static const Duration _heartbeatInterval = Duration(seconds: 120);
 
   String? _machineId;
   String? _licenseKey;
   String? _displayName;
+
+  // Public endpoint info for P2P
+  String? _publicIp;
+  int? _publicPort;
+
+  // Active seeding file hashes
+  final Set<String> _seedingFileHashes = {};
+  Set<String> get seedingFileHashes => _seedingFileHashes;
+
+  Timer? _heartbeatTimer;
+  bool get isSeeding => _seedingFileHashes.isNotEmpty;
 
   List<BtCategory> _categories = [];
   List<BtCategory> get categories => _categories;
@@ -40,7 +53,10 @@ class TorrentService extends ChangeNotifier {
   bool _isCategoriesLoading = false;
   bool _isFilesLoading = false;
   bool _isLeaderboardLoading = false;
-  bool get isLoading => _isCategoriesLoading || _isFilesLoading || _isLeaderboardLoading;
+  bool _isUploading = false;
+  bool get isLoading =>
+      _isCategoriesLoading || _isFilesLoading || _isLeaderboardLoading;
+  bool get isUploading => _isUploading;
 
   String? _error;
   String? get error => _error;
@@ -55,22 +71,61 @@ class TorrentService extends ChangeNotifier {
     _displayName = displayName;
   }
 
-  /// Fetch all categories.
+  /// Helper: parse response safely with status code checking.
+  Map<String, dynamic>? _parseResponse(http.Response response) {
+    if (response.statusCode >= 500) {
+      debugPrint('Server error: ${response.statusCode}');
+      return null;
+    }
+    try {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    } catch (e) {
+      debugPrint('JSON parse error: $e');
+      return null;
+    }
+  }
+
+  /// Discover own public IP via STUN-like endpoint.
+  Future<void> discoverPublicIp() async {
+    try {
+      final uri = Uri.parse('$_baseUrl/stun');
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'machine_id': _machineId ?? '',
+              'license_key': _licenseKey ?? '',
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      final data = _parseResponse(response);
+      if (data != null && data['success'] == true) {
+        _publicIp = data['public_ip'] as String?;
+        _publicPort = data['public_port'] as int?;
+      }
+    } catch (e) {
+      debugPrint('TorrentService.discoverPublicIp error: $e');
+    }
+  }
+
+  // ─── CATEGORIES ───
+
   Future<void> fetchCategories() async {
     _isCategoriesLoading = true;
     _error = null;
     notifyListeners();
 
     try {
-      final uri = Uri.parse('$_baseUrl/torrent/categories')
-          .replace(queryParameters: {
-        if (_machineId != null) 'machine_id': _machineId!,
-      });
+      final uri = Uri.parse('$_baseUrl/torrent/categories');
+      final response =
+          await http.get(uri).timeout(const Duration(seconds: 15));
+      final data = _parseResponse(response);
 
-      final response = await http.get(uri).timeout(const Duration(seconds: 15));
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-
-      if (data['success'] == true) {
+      if (data == null) {
+        _error = 'เซิร์ฟเวอร์ไม่ตอบสนอง';
+      } else if (data['success'] == true) {
         _categories = (data['categories'] as List<dynamic>)
             .map((e) => BtCategory.fromJson(e as Map<String, dynamic>))
             .toList();
@@ -86,8 +141,10 @@ class TorrentService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Fetch files in a category.
-  Future<void> fetchFiles(String categorySlug, {
+  // ─── FILES ───
+
+  Future<void> fetchFiles(
+    String categorySlug, {
     String sort = 'newest',
     String? search,
     int page = 1,
@@ -104,16 +161,18 @@ class TorrentService extends ChangeNotifier {
         'sort': sort,
         'page': page.toString(),
         if (search != null && search.isNotEmpty) 'search': search,
-        if (_machineId != null) 'machine_id': _machineId!,
       };
 
       final uri = Uri.parse('$_baseUrl/torrent/files/$categorySlug')
           .replace(queryParameters: params);
 
-      final response = await http.get(uri).timeout(const Duration(seconds: 15));
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final response =
+          await http.get(uri).timeout(const Duration(seconds: 15));
+      final data = _parseResponse(response);
 
-      if (data['success'] == true) {
+      if (data == null) {
+        _error = 'เซิร์ฟเวอร์ไม่ตอบสนอง';
+      } else if (data['success'] == true) {
         final newFiles = (data['files'] as List<dynamic>)
             .map((e) => BtFile.fromJson(e as Map<String, dynamic>))
             .toList();
@@ -140,14 +199,20 @@ class TorrentService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Fetch file detail.
+  // ─── FILE DETAIL ───
+
   Future<BtFile?> fetchFileDetail(int fileId) async {
     try {
-      final uri = Uri.parse('$_baseUrl/torrent/file/$fileId');
-      final response = await http.get(uri).timeout(const Duration(seconds: 15));
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final params = <String, String>{
+        if (_machineId != null) 'machine_id': _machineId!,
+      };
+      final uri = Uri.parse('$_baseUrl/torrent/file/$fileId')
+          .replace(queryParameters: params.isNotEmpty ? params : null);
+      final response =
+          await http.get(uri).timeout(const Duration(seconds: 15));
+      final data = _parseResponse(response);
 
-      if (data['success'] == true && data['file'] != null) {
+      if (data != null && data['success'] == true && data['file'] != null) {
         return BtFile.fromJson(data['file'] as Map<String, dynamic>);
       }
     } catch (e) {
@@ -156,14 +221,21 @@ class TorrentService extends ChangeNotifier {
     return null;
   }
 
-  /// Fetch seeders for a file.
+  // ─── SEEDERS ───
+
   Future<List<BtSeeder>> fetchSeeders(int fileId) async {
     try {
-      final uri = Uri.parse('$_baseUrl/torrent/file/$fileId/seeders');
-      final response = await http.get(uri).timeout(const Duration(seconds: 15));
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final params = <String, String>{
+        if (_machineId != null) 'machine_id': _machineId!,
+        if (_licenseKey != null) 'license_key': _licenseKey!,
+      };
+      final uri = Uri.parse('$_baseUrl/torrent/file/$fileId/seeders')
+          .replace(queryParameters: params.isNotEmpty ? params : null);
+      final response =
+          await http.get(uri).timeout(const Duration(seconds: 15));
+      final data = _parseResponse(response);
 
-      if (data['success'] == true) {
+      if (data != null && data['success'] == true) {
         return (data['seeders'] as List<dynamic>)
             .map((e) => BtSeeder.fromJson(e as Map<String, dynamic>))
             .toList();
@@ -174,7 +246,158 @@ class TorrentService extends ChangeNotifier {
     return [];
   }
 
-  /// Fetch leaderboard.
+  // ─── REGISTER AS SEEDER ───
+
+  /// Register this device as a seeder for a file.
+  Future<bool> registerSeeder({
+    required String fileHash,
+    String chunksBitmap = 'all',
+  }) async {
+    if (_machineId == null || _licenseKey == null) return false;
+
+    try {
+      final body = {
+        'machine_id': _machineId!,
+        'license_key': _licenseKey!,
+        'file_hash': fileHash,
+        'chunks_bitmap': chunksBitmap,
+        if (_displayName != null) 'display_name': _displayName,
+        if (_publicIp != null) 'public_ip': _publicIp,
+        if (_publicPort != null) 'public_port': _publicPort,
+      };
+
+      final response = await http
+          .post(
+            Uri.parse('$_baseUrl/torrent/seed'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      final data = _parseResponse(response);
+      if (data != null && data['success'] == true) {
+        _seedingFileHashes.add(fileHash);
+        _ensureHeartbeat();
+        return true;
+      }
+    } catch (e) {
+      debugPrint('TorrentService.registerSeeder error: $e');
+    }
+    return false;
+  }
+
+  // ─── HEARTBEAT ───
+
+  /// Start heartbeat timer if not already running.
+  void _ensureHeartbeat() {
+    if (_heartbeatTimer != null) return;
+    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) {
+      _sendHeartbeat();
+    });
+  }
+
+  /// Stop heartbeat and mark seeders offline.
+  void stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    _seedingFileHashes.clear();
+  }
+
+  /// Send heartbeat to keep seeder status alive.
+  Future<void> _sendHeartbeat() async {
+    if (_machineId == null || _licenseKey == null) return;
+    if (_seedingFileHashes.isEmpty) {
+      stopHeartbeat();
+      return;
+    }
+
+    try {
+      final body = {
+        'machine_id': _machineId!,
+        'license_key': _licenseKey!,
+        'file_hashes': _seedingFileHashes.toList(),
+        if (_publicIp != null) 'public_ip': _publicIp,
+        if (_publicPort != null) 'public_port': _publicPort,
+      };
+
+      await http
+          .post(
+            Uri.parse('$_baseUrl/torrent/heartbeat'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (e) {
+      debugPrint('TorrentService.heartbeat error: $e');
+    }
+  }
+
+  // ─── UPLOAD ───
+
+  Future<BtFile?> uploadFile({
+    required String categorySlug,
+    required String fileHash,
+    required String fileName,
+    required int fileSize,
+    String? description,
+    String? thumbnailData,
+    int? chunkSize,
+  }) async {
+    if (_machineId == null || _licenseKey == null) return null;
+
+    _isUploading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final body = <String, dynamic>{
+        'machine_id': _machineId!,
+        'license_key': _licenseKey!,
+        'category_slug': categorySlug,
+        'file_hash': fileHash,
+        'file_name': fileName,
+        'file_size': fileSize,
+        if (description != null) 'description': description,
+        if (thumbnailData != null) 'thumbnail_data': thumbnailData,
+        if (_displayName != null) 'display_name': _displayName,
+        if (chunkSize != null) 'chunk_size': chunkSize,
+        if (_publicIp != null) 'public_ip': _publicIp,
+        if (_publicPort != null) 'public_port': _publicPort,
+      };
+
+      final response = await http
+          .post(
+            Uri.parse('$_baseUrl/torrent/upload'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 30));
+
+      final data = _parseResponse(response);
+
+      if (data != null && data['success'] == true && data['file'] != null) {
+        final btFile = BtFile.fromJson(data['file'] as Map<String, dynamic>);
+        // Auto-register as seeder for uploaded file
+        _seedingFileHashes.add(fileHash);
+        _ensureHeartbeat();
+        _isUploading = false;
+        notifyListeners();
+        return btFile;
+      } else {
+        _error = data?['error'] as String? ?? 'อัพโหลดล้มเหลว';
+      }
+    } catch (e) {
+      _error = 'อัพโหลดล้มเหลว';
+      debugPrint('TorrentService.uploadFile error: $e');
+    }
+
+    _isUploading = false;
+    notifyListeners();
+    return null;
+  }
+
+  // ─── LEADERBOARD ───
+
   Future<void> fetchLeaderboard() async {
     _isLeaderboardLoading = true;
     _error = null;
@@ -182,10 +405,11 @@ class TorrentService extends ChangeNotifier {
 
     try {
       final uri = Uri.parse('$_baseUrl/torrent/leaderboard');
-      final response = await http.get(uri).timeout(const Duration(seconds: 15));
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final response =
+          await http.get(uri).timeout(const Duration(seconds: 15));
+      final data = _parseResponse(response);
 
-      if (data['success'] == true) {
+      if (data != null && data['success'] == true) {
         _leaderboard = (data['leaderboard'] as List<dynamic>)
             .map((e) =>
                 BtLeaderboardEntry.fromJson(e as Map<String, dynamic>))
@@ -200,21 +424,27 @@ class TorrentService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Fetch user profile (stats + trophies).
+  // ─── USER PROFILE ───
+
   Future<void> fetchUserProfile() async {
     if (_machineId == null || _licenseKey == null) return;
 
     try {
-      final uri = Uri.parse('$_baseUrl/torrent/profile')
-          .replace(queryParameters: {
-        'machine_id': _machineId!,
-        'license_key': _licenseKey!,
-      });
+      // Use POST to avoid exposing license_key in URL
+      final response = await http
+          .post(
+            Uri.parse('$_baseUrl/torrent/profile'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'machine_id': _machineId!,
+              'license_key': _licenseKey!,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
 
-      final response = await http.get(uri).timeout(const Duration(seconds: 15));
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final data = _parseResponse(response);
 
-      if (data['success'] == true) {
+      if (data != null && data['success'] == true) {
         if (data['stats'] != null) {
           _userStats = BtUserStats.fromJson(
               data['stats'] as Map<String, dynamic>);
@@ -232,14 +462,16 @@ class TorrentService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Fetch all trophies grouped by difficulty.
+  // ─── TROPHIES ───
+
   Future<void> fetchAllTrophies() async {
     try {
       final uri = Uri.parse('$_baseUrl/torrent/trophies');
-      final response = await http.get(uri).timeout(const Duration(seconds: 15));
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final response =
+          await http.get(uri).timeout(const Duration(seconds: 15));
+      final data = _parseResponse(response);
 
-      if (data['success'] == true && data['trophies'] != null) {
+      if (data != null && data['success'] == true && data['trophies'] != null) {
         final trophiesMap = data['trophies'] as Map<String, dynamic>;
         _allTrophies = {};
         trophiesMap.forEach((key, value) {
@@ -255,66 +487,19 @@ class TorrentService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Upload a file to the global torrent system.
-  Future<BtFile?> uploadFile({
-    required String categorySlug,
-    required String fileHash,
-    required String fileName,
-    required int fileSize,
-    String? description,
-    String? thumbnailData,
-  }) async {
-    if (_machineId == null || _licenseKey == null) return null;
+  // ─── KYC ───
 
-    try {
-      final body = {
-        'machine_id': _machineId!,
-        'license_key': _licenseKey!,
-        'category_slug': categorySlug,
-        'file_hash': fileHash,
-        'file_name': fileName,
-        'file_size': fileSize,
-        if (description != null) 'description': description,
-        if (thumbnailData != null) 'thumbnail_data': thumbnailData,
-        if (_displayName != null) 'display_name': _displayName,
-      };
-
-      final response = await http
-          .post(
-            Uri.parse('$_baseUrl/torrent/upload'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(body),
-          )
-          .timeout(const Duration(seconds: 30));
-
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-
-      if (data['success'] == true && data['file'] != null) {
-        return BtFile.fromJson(data['file'] as Map<String, dynamic>);
-      } else {
-        _error = data['error'] as String?;
-      }
-    } catch (e) {
-      _error = 'อัพโหลดล้มเหลว';
-      debugPrint('TorrentService.uploadFile error: $e');
-    }
-
-    notifyListeners();
-    return null;
-  }
-
-  /// Check KYC status.
   Future<void> fetchKycStatus() async {
     if (_machineId == null) return;
 
     try {
       final uri = Uri.parse('$_baseUrl/torrent/kyc/status')
           .replace(queryParameters: {'machine_id': _machineId!});
+      final response =
+          await http.get(uri).timeout(const Duration(seconds: 15));
+      final data = _parseResponse(response);
 
-      final response = await http.get(uri).timeout(const Duration(seconds: 15));
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-
-      if (data['success'] == true) {
+      if (data != null && data['success'] == true) {
         _kycStatus = data['status'] as String?;
       }
     } catch (e) {
@@ -324,7 +509,6 @@ class TorrentService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Submit KYC verification.
   Future<bool> submitKyc({
     required String displayName,
     required String idCardFrontBase64,
@@ -353,14 +537,14 @@ class TorrentService extends ChangeNotifier {
           )
           .timeout(const Duration(seconds: 30));
 
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final data = _parseResponse(response);
 
-      if (data['success'] == true) {
+      if (data != null && data['success'] == true) {
         _kycStatus = 'pending';
         notifyListeners();
         return true;
       } else {
-        _error = data['error'] as String?;
+        _error = data?['error'] as String?;
       }
     } catch (e) {
       _error = 'ส่งข้อมูลล้มเหลว';
@@ -369,5 +553,13 @@ class TorrentService extends ChangeNotifier {
 
     notifyListeners();
     return false;
+  }
+
+  // ─── CLEANUP ───
+
+  @override
+  void dispose() {
+    stopHeartbeat();
+    super.dispose();
   }
 }

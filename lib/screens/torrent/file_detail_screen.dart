@@ -266,6 +266,56 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
               ),
             ).animate().fadeIn(duration: 400.ms, delay: 200.ms),
 
+            const SizedBox(height: 12),
+
+            // Download / Seed action
+            _buildDownloadSeedCard(file),
+
+            const SizedBox(height: 12),
+
+            // Copy Magnet Link
+            GlassCard(
+              onTap: () {
+                final magnetParts = <String>[
+                  'hash:${file.fileHash}',
+                  'name:${file.fileName}',
+                ];
+                for (final seeder in _seeders.where((s) => s.isOnline)) {
+                  if (seeder.publicIp != null && seeder.publicPort != null) {
+                    magnetParts.add('peer:${seeder.publicIp}:${seeder.publicPort}');
+                  }
+                }
+                final magnetLink = 'magnet:?${magnetParts.join('&')}';
+                Clipboard.setData(ClipboardData(text: magnetLink));
+                SoundService().play(SfxType.coin);
+                HapticFeedback.lightImpact();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('คัดลอก Magnet Link แล้ว'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                }
+              },
+              padding: const EdgeInsets.all(14),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.link, color: AppColors.secondary, size: 18),
+                  SizedBox(width: 8),
+                  Text(
+                    'คัดลอก Magnet Link',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.secondary,
+                    ),
+                  ),
+                ],
+              ),
+            ).animate().fadeIn(duration: 400.ms, delay: 250.ms),
+
             const SizedBox(height: 20),
 
             // Seeders section
@@ -345,6 +395,25 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
                                   color: AppColors.textPrimary,
                                 ),
                               ),
+                              if (seeder.publicIp != null &&
+                                  seeder.publicPort != null)
+                                Text(
+                                  '${seeder.publicIp}:${seeder.publicPort}',
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: AppColors.textSecondary,
+                                  ),
+                                ),
+                              Text(
+                                seeder.machineId,
+                                style: const TextStyle(
+                                  fontSize: 10,
+                                  fontFamily: 'monospace',
+                                  color: AppColors.textMuted,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                               Text(
                                 seeder.isOnline ? 'ออนไลน์' : 'ออฟไลน์',
                                 style: TextStyle(
@@ -390,6 +459,151 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
         ),
       ),
     );
+  }
+
+  bool _isRegistering = false;
+
+  Widget _buildDownloadSeedCard(BtFile file) {
+    final onlineSeeders = _seeders.where((s) => s.isOnline).toList();
+    final hasOnlineSeeders = onlineSeeders.isNotEmpty;
+
+    return GlassCard(
+      padding: const EdgeInsets.all(16),
+      borderColor: hasOnlineSeeders
+          ? AppColors.success.withValues(alpha: 0.3)
+          : AppColors.cardBorder,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Download button
+          SizedBox(
+            width: double.infinity,
+            height: 44,
+            child: ElevatedButton.icon(
+              onPressed: _isRegistering
+                  ? null
+                  : () async {
+                      setState(() => _isRegistering = true);
+                      try {
+                        final success =
+                            await widget.torrentService.registerSeeder(
+                          fileHash: file.fileHash,
+                        );
+                        if (!mounted) return;
+                        if (success) {
+                          SoundService().play(SfxType.coin);
+                          HapticFeedback.mediumImpact();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('ลงทะเบียนเป็น Seeder แล้ว'),
+                              backgroundColor: AppColors.success,
+                            ),
+                          );
+                          _loadDetail();
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                widget.torrentService.error ??
+                                    'ลงทะเบียนไม่สำเร็จ',
+                              ),
+                              backgroundColor: AppColors.error,
+                            ),
+                          );
+                        }
+                      } catch (e) {
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'เกิดข้อผิดพลาด: ${e.toString().replaceFirst(RegExp(r'^Exception:\s*'), '')}',
+                            ),
+                            backgroundColor: AppColors.error,
+                          ),
+                        );
+                      } finally {
+                        if (mounted) {
+                          setState(() => _isRegistering = false);
+                        }
+                      }
+                    },
+              style: ElevatedButton.styleFrom(
+                backgroundColor:
+                    hasOnlineSeeders ? AppColors.success : AppColors.primary,
+                disabledBackgroundColor:
+                    AppColors.primary.withValues(alpha: 0.3),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              icon: _isRegistering
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.download, color: Colors.white, size: 20),
+              label: Text(
+                hasOnlineSeeders
+                    ? 'ดาวน์โหลด (${onlineSeeders.length} seeders)'
+                    : 'ดาวน์โหลด / เริ่ม Seed',
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ),
+
+          // Show online seeder IPs
+          if (hasOnlineSeeders) ...[
+            const SizedBox(height: 12),
+            const Text(
+              'P2P Peers',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 6),
+            ...onlineSeeders.map((seeder) {
+              final addr = seeder.publicIp != null && seeder.publicPort != null
+                  ? '${seeder.publicIp}:${seeder.publicPort}'
+                  : 'ไม่ทราบ IP';
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: const BoxDecoration(
+                        color: AppColors.success,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      addr,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ],
+        ],
+      ),
+    ).animate().fadeIn(duration: 400.ms, delay: 220.ms);
   }
 
   Widget _buildStatBadge(IconData icon, String text, Color color) {
