@@ -12,6 +12,12 @@ import 'package:path_provider/path_provider.dart';
 
 import 'p2p_service.dart';
 
+/// Compute SHA256 hash of a file in a separate isolate (top-level for compute())
+Future<String> _computeFileHash(String filePath) async {
+  final bytes = await File(filePath).readAsBytes();
+  return sha256.convert(bytes).toString();
+}
+
 /// File transfer state
 enum TransferStatus { waiting, transferring, completed, failed, cancelled }
 
@@ -243,8 +249,10 @@ class FileTransferService extends ChangeNotifier {
     final file = File(filePath);
     if (!await file.exists()) return false;
 
-    final bytes = await file.readAsBytes();
-    final hash = sha256.convert(bytes).toString();
+    final fileSize = await file.length();
+
+    // Compute SHA256 hash (use compute for large files to avoid blocking UI)
+    final hash = await compute(_computeFileHash, filePath);
 
     // Store locally
     _localFilePaths[hash] = filePath;
@@ -259,7 +267,7 @@ class FileTransferService extends ChangeNotifier {
               ..._authBody,
               'file_hash': hash,
               'file_name': path.basename(filePath),
-              'file_size': bytes.length,
+              'file_size': fileSize,
               'chunk_size': _defaultChunkSize,
             }),
           )

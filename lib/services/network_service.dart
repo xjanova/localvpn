@@ -34,6 +34,10 @@ class NetworkService extends ChangeNotifier {
   String? _deviceId;
   String? _displayName;
   String? _licenseKey;
+  String? _ownVirtualIp;
+
+  /// The virtual IP assigned to this device in the current network
+  String? get ownVirtualIp => _ownVirtualIp;
 
   void configure({required String deviceId, String? displayName, String? licenseKey}) {
     _deviceId = deviceId;
@@ -146,6 +150,12 @@ class NetworkService extends ChangeNotifier {
 
         _currentNetwork = network;
 
+        // Parse own virtual IP from member info
+        final memberData = data['member'] as Map<String, dynamic>?;
+        if (memberData != null) {
+          _ownVirtualIp = memberData['virtual_ip'] as String?;
+        }
+
         String? passwordHash;
         if (password != null && password.isNotEmpty) {
           passwordHash = sha256.convert(utf8.encode(password)).toString();
@@ -201,12 +211,18 @@ class NetworkService extends ChangeNotifier {
           )
           .timeout(const Duration(seconds: 15));
 
-      if (response.statusCode == 200) {
+      if (response.statusCode == 200 || response.statusCode == 201) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final network = VpnNetwork.fromJson(
             data['network'] as Map<String, dynamic>? ?? data);
 
         _currentNetwork = network;
+
+        // Parse own virtual IP from member info
+        final memberData = data['member'] as Map<String, dynamic>?;
+        if (memberData != null) {
+          _ownVirtualIp = memberData['virtual_ip'] as String?;
+        }
 
         String? passwordHash;
         if (password != null && password.isNotEmpty) {
@@ -223,7 +239,7 @@ class NetworkService extends ChangeNotifier {
         return true;
       } else {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
-        _error = data['message'] as String? ?? 'ไม่สามารถเข้าร่วมเครือข่ายได้';
+        _error = data['message'] as String? ?? data['error'] as String? ?? 'ไม่สามารถเข้าร่วมเครือข่ายได้';
         notifyListeners();
         return false;
       }
@@ -261,6 +277,7 @@ class NetworkService extends ChangeNotifier {
         if (_currentNetwork?.slug == slug) {
           _currentNetwork = null;
           _members = [];
+          _ownVirtualIp = null;
         }
 
         await _db.deleteSavedNetwork(slug);
@@ -334,6 +351,7 @@ class NetworkService extends ChangeNotifier {
         if (_currentNetwork?.slug == slug) {
           _currentNetwork = null;
           _members = [];
+          _ownVirtualIp = null;
         }
 
         await _db.deleteSavedNetwork(slug);
@@ -435,6 +453,7 @@ class NetworkService extends ChangeNotifier {
     _stopHeartbeat();
     _currentNetwork = null;
     _members = [];
+    _ownVirtualIp = null;
     notifyListeners();
   }
 

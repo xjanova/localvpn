@@ -337,9 +337,18 @@ class _HomeScreenState extends State<HomeScreen> {
                         if (isConnected) {
                           await _vpnService.stopVpn();
                         } else {
+                          final vip = _networkService.ownVirtualIp;
+                          if (vip == null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('ยังไม่ได้รับ Virtual IP จากเซิร์ฟเวอร์'),
+                              ),
+                            );
+                            return;
+                          }
                           await _vpnService.startVpn(
-                            virtualIp: '10.10.0.2',
-                            subnet: '255.255.255.0',
+                            virtualIp: vip,
+                            subnet: _networkService.currentNetwork?.virtualSubnet ?? '10.10.0.0/24',
                             peers: [],
                           );
                         }
@@ -429,6 +438,7 @@ class _HomeScreenState extends State<HomeScreen> {
             builder: (_) => NetworkDetailScreen(
               networkService: _networkService,
               network: network,
+              vpnService: _vpnService,
             ),
           ),
         );

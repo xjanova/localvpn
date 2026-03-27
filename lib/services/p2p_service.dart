@@ -355,7 +355,9 @@ class P2pService extends ChangeNotifier {
 
     // Check if it's a file transfer message
     if (text.startsWith('LVPN_FILE_')) {
-      onFileMessage?.call(senderIp, data);
+      // Map sender's public IP to virtual IP for correct routing
+      final senderVip = _resolveVirtualIp(senderIp, senderPort);
+      onFileMessage?.call(senderVip ?? senderIp, data);
       return;
     }
 
@@ -587,6 +589,23 @@ class P2pService extends ChangeNotifier {
     packet.setRange(0, 4, header);
     packet.setRange(4, 4 + data.length, data);
     return packet;
+  }
+
+  /// Resolve a public IP:port to a virtual IP by looking up peers
+  String? _resolveVirtualIp(String publicIp, int publicPort) {
+    for (final peer in _peers.values) {
+      if (peer.publicIp == publicIp &&
+          (peer.publicPort == publicPort || peer.publicPort == 0)) {
+        return peer.virtualIp;
+      }
+    }
+    // Fallback: match by IP only
+    for (final peer in _peers.values) {
+      if (peer.publicIp == publicIp) {
+        return peer.virtualIp;
+      }
+    }
+    return null;
   }
 
   /// Extract virtual IP from packet header

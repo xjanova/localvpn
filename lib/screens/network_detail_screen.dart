@@ -5,7 +5,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 
 import '../models/network.dart';
 import '../services/network_service.dart';
-import '../services/vpn_service.dart';
+import '../services/vpn_service.dart';  // Used for vpnService parameter
 import '../theme/app_theme.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/member_tile.dart';
@@ -14,11 +14,13 @@ import '../widgets/neon_button.dart';
 class NetworkDetailScreen extends StatefulWidget {
   final NetworkService networkService;
   final VpnNetwork network;
+  final VpnService? vpnService;
 
   const NetworkDetailScreen({
     super.key,
     required this.networkService,
     required this.network,
+    this.vpnService,
   });
 
   @override
@@ -89,9 +91,8 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
 
     if (confirmed != true) return;
 
-    final vpnService = VpnService();
-    if (vpnService.isConnected) {
-      await vpnService.stopVpn();
+    if (widget.vpnService?.isConnected == true) {
+      await widget.vpnService!.stopVpn();
     }
 
     final success =
@@ -148,9 +149,8 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
 
     if (confirmed != true) return;
 
-    final vpnService = VpnService();
-    if (vpnService.isConnected) {
-      await vpnService.stopVpn();
+    if (widget.vpnService?.isConnected == true) {
+      await widget.vpnService!.stopVpn();
     }
 
     final success =
@@ -176,7 +176,8 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final members = widget.networkService.members;
-    final network = widget.network;
+    // Use live network from service (updated by heartbeat) with fallback to snapshot
+    final network = widget.networkService.currentNetwork ?? widget.network;
 
     return Scaffold(
       body: Container(
