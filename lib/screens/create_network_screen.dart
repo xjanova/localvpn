@@ -1,8 +1,13 @@
+import 'dart:math' show sin;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 import '../services/network_service.dart';
+import '../services/sound_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/cyber_page_route.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/neon_button.dart';
 import 'network_detail_screen.dart';
@@ -19,36 +24,63 @@ class CreateNetworkScreen extends StatefulWidget {
   State<CreateNetworkScreen> createState() => _CreateNetworkScreenState();
 }
 
-class _CreateNetworkScreenState extends State<CreateNetworkScreen> {
+class _CreateNetworkScreenState extends State<CreateNetworkScreen>
+    with SingleTickerProviderStateMixin {
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _descController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
-
   bool _isPublic = true;
   double _maxMembers = 10;
   bool _isCreating = false;
+
+  // Shake animation for errors
+  late AnimationController _shakeController;
+  late Animation<double> _shakeAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _shakeController = AnimationController(
+      duration: const Duration(milliseconds: 500),
+      vsync: this,
+    );
+    _shakeAnimation = Tween<double>(begin: 0, end: 1).animate(
+      CurvedAnimation(parent: _shakeController, curve: Curves.elasticIn),
+    );
+  }
 
   @override
   void dispose() {
     _nameController.dispose();
     _descController.dispose();
     _passwordController.dispose();
+    _shakeController.dispose();
     super.dispose();
+  }
+
+  void _triggerShake() {
+    _shakeController.forward().then((_) => _shakeController.reverse());
   }
 
   Future<void> _createNetwork() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
+      SoundService().play(SfxType.error);
+      _triggerShake();
       _showError('กรุณากรอกชื่อเครือข่าย');
       return;
     }
 
     if (name.length < 3) {
+      SoundService().play(SfxType.error);
+      _triggerShake();
       _showError('ชื่อเครือข่ายต้องมีอย่างน้อย 3 ตัวอักษร');
       return;
     }
 
     if (!_isPublic && _passwordController.text.trim().isEmpty) {
+      SoundService().play(SfxType.error);
+      _triggerShake();
       _showError('กรุณากรอกรหัสผ่านสำหรับเครือข่ายส่วนตัว');
       return;
     }
@@ -61,8 +93,7 @@ class _CreateNetworkScreenState extends State<CreateNetworkScreen> {
           ? _descController.text.trim()
           : null,
       isPublic: _isPublic,
-      password:
-          !_isPublic ? _passwordController.text.trim() : null,
+      password: !_isPublic ? _passwordController.text.trim() : null,
       maxMembers: _maxMembers.round(),
     );
 
@@ -71,10 +102,13 @@ class _CreateNetworkScreenState extends State<CreateNetworkScreen> {
     setState(() => _isCreating = false);
 
     if (success) {
+      SoundService().play(SfxType.success);
+      HapticFeedback.heavyImpact();
+
       final network = widget.networkService.currentNetwork;
       if (network != null) {
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
+          CyberPageRoute(
             builder: (_) => NetworkDetailScreen(
               networkService: widget.networkService,
               network: network,
@@ -85,6 +119,7 @@ class _CreateNetworkScreenState extends State<CreateNetworkScreen> {
         Navigator.of(context).pop();
       }
     } else {
+      SoundService().play(SfxType.error);
       _showError(
         widget.networkService.error ?? 'ไม่สามารถสร้างเครือข่ายได้',
       );
@@ -150,7 +185,10 @@ class _CreateNetworkScreenState extends State<CreateNetworkScreen> {
         children: [
           IconButton(
             icon: const Icon(Icons.arrow_back, color: AppColors.primary),
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () {
+              SoundService().play(SfxType.swoosh);
+              Navigator.of(context).pop();
+            },
           ),
           const Expanded(
             child: Text(
@@ -166,36 +204,47 @@ class _CreateNetworkScreenState extends State<CreateNetworkScreen> {
           const SizedBox(width: 48),
         ],
       ),
-    );
+    ).animate().fadeIn(duration: 300.ms).slideY(begin: -0.1, end: 0);
   }
 
   Widget _buildNameField() {
-    return GlassCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'ชื่อเครือข่าย',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: AppColors.textPrimary,
+    return AnimatedBuilder(
+      animation: _shakeAnimation,
+      builder: (context, child) {
+        final shake =
+            sin(_shakeAnimation.value * 3 * 3.14159) * 8 * (1 - _shakeAnimation.value);
+        return Transform.translate(
+          offset: Offset(shake, 0),
+          child: child,
+        );
+      },
+      child: GlassCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'ชื่อเครือข่าย',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _nameController,
-            style: const TextStyle(color: AppColors.textPrimary),
-            maxLength: 50,
-            decoration: const InputDecoration(
-              hintText: 'เช่น My Gaming LAN',
-              prefixIcon: Icon(Icons.lan, color: AppColors.primary),
-              counterStyle: TextStyle(color: AppColors.textMuted),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _nameController,
+              style: const TextStyle(color: AppColors.textPrimary),
+              maxLength: 50,
+              decoration: const InputDecoration(
+                hintText: 'เช่น My Gaming LAN',
+                prefixIcon: Icon(Icons.lan, color: AppColors.primary),
+                counterStyle: TextStyle(color: AppColors.textMuted),
+              ),
             ),
-          ),
-        ],
-      ),
-    ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.1, end: 0);
+          ],
+        ),
+      ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.1, end: 0),
+    );
   }
 
   Widget _buildDescriptionField() {
@@ -234,7 +283,8 @@ class _CreateNetworkScreenState extends State<CreateNetworkScreen> {
     return GlassCard(
       child: Row(
         children: [
-          Container(
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
             width: 40,
             height: 40,
             decoration: BoxDecoration(
@@ -243,10 +293,20 @@ class _CreateNetworkScreenState extends State<CreateNetworkScreen> {
                   : AppColors.secondary.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Icon(
-              _isPublic ? Icons.public : Icons.lock,
-              color: _isPublic ? AppColors.primary : AppColors.secondary,
-              size: 20,
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 300),
+              transitionBuilder: (child, animation) {
+                return RotationTransition(
+                  turns: Tween(begin: 0.0, end: 1.0).animate(animation),
+                  child: FadeTransition(opacity: animation, child: child),
+                );
+              },
+              child: Icon(
+                _isPublic ? Icons.public : Icons.lock,
+                key: ValueKey(_isPublic),
+                color: _isPublic ? AppColors.primary : AppColors.secondary,
+                size: 20,
+              ),
             ),
           ),
           const SizedBox(width: 12),
@@ -254,12 +314,16 @@ class _CreateNetworkScreenState extends State<CreateNetworkScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  _isPublic ? 'สาธารณะ' : 'ส่วนตัว',
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: Text(
+                    _isPublic ? 'สาธารณะ' : 'ส่วนตัว',
+                    key: ValueKey(_isPublic),
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
                   ),
                 ),
                 Text(
@@ -277,6 +341,8 @@ class _CreateNetworkScreenState extends State<CreateNetworkScreen> {
           Switch(
             value: _isPublic,
             onChanged: (value) {
+              SoundService().play(SfxType.toggle);
+              HapticFeedback.selectionClick();
               setState(() => _isPublic = value);
             },
           ),
@@ -332,19 +398,26 @@ class _CreateNetworkScreenState extends State<CreateNetworkScreen> {
                 ),
               ),
               const Spacer(),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  '${_maxMembers.round()} คน',
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.primary,
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 150),
+                transitionBuilder: (child, anim) {
+                  return ScaleTransition(scale: anim, child: child);
+                },
+                child: Container(
+                  key: ValueKey(_maxMembers.round()),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '${_maxMembers.round()} คน',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.primary,
+                    ),
                   ),
                 ),
               ),
@@ -364,6 +437,9 @@ class _CreateNetworkScreenState extends State<CreateNetworkScreen> {
               max: 50,
               divisions: 48,
               onChanged: (value) {
+                if (value.round() != _maxMembers.round()) {
+                  HapticFeedback.selectionClick();
+                }
                 setState(() => _maxMembers = value);
               },
             ),
@@ -404,3 +480,4 @@ class _CreateNetworkScreenState extends State<CreateNetworkScreen> {
         .slideY(begin: 0.1, end: 0);
   }
 }
+

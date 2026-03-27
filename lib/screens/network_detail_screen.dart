@@ -5,7 +5,8 @@ import 'package:flutter_animate/flutter_animate.dart';
 
 import '../models/network.dart';
 import '../services/network_service.dart';
-import '../services/vpn_service.dart';  // Used for vpnService parameter
+import '../services/sound_service.dart';
+import '../services/vpn_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/member_tile.dart';
@@ -29,10 +30,12 @@ class NetworkDetailScreen extends StatefulWidget {
 
 class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
   Timer? _refreshTimer;
+  int _previousMemberCount = 0;
 
   @override
   void initState() {
     super.initState();
+    _previousMemberCount = widget.networkService.members.length;
     _loadMembers();
     widget.networkService.addListener(_onChanged);
 
@@ -43,7 +46,15 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
   }
 
   void _onChanged() {
-    if (mounted) setState(() {});
+    if (mounted) {
+      // Play notification when new member joins
+      final currentCount = widget.networkService.members.length;
+      if (currentCount > _previousMemberCount && _previousMemberCount > 0) {
+        SoundService().play(SfxType.notification);
+      }
+      _previousMemberCount = currentCount;
+      setState(() {});
+    }
   }
 
   @override
@@ -58,6 +69,7 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
   }
 
   Future<void> _leaveNetwork() async {
+    SoundService().play(SfxType.notification);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -72,11 +84,17 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
+            onPressed: () {
+              SoundService().play(SfxType.tap);
+              Navigator.pop(ctx, false);
+            },
             child: const Text('ยกเลิก'),
           ),
           ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
+            onPressed: () {
+              SoundService().play(SfxType.disconnect);
+              Navigator.pop(ctx, true);
+            },
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.error,
             ),
@@ -103,6 +121,7 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
     if (success) {
       Navigator.of(context).pop();
     } else {
+      SoundService().play(SfxType.error);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -116,6 +135,7 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
   }
 
   Future<void> _deleteNetwork() async {
+    SoundService().play(SfxType.notification);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -130,11 +150,17 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
+            onPressed: () {
+              SoundService().play(SfxType.tap);
+              Navigator.pop(ctx, false);
+            },
             child: const Text('ยกเลิก'),
           ),
           ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
+            onPressed: () {
+              SoundService().play(SfxType.disconnect);
+              Navigator.pop(ctx, true);
+            },
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.error,
             ),
@@ -161,6 +187,7 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
     if (success) {
       Navigator.of(context).pop();
     } else {
+      SoundService().play(SfxType.error);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -176,7 +203,6 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final members = widget.networkService.members;
-    // Use live network from service (updated by heartbeat) with fallback to snapshot
     final network = widget.networkService.currentNetwork ?? widget.network;
 
     return Scaffold(
@@ -233,7 +259,10 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
         children: [
           IconButton(
             icon: const Icon(Icons.arrow_back, color: AppColors.primary),
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () {
+              SoundService().play(SfxType.swoosh);
+              Navigator.of(context).pop();
+            },
           ),
           Expanded(
             child: Text(
@@ -274,7 +303,7 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
           ),
         ],
       ),
-    );
+    ).animate().fadeIn(duration: 300.ms);
   }
 
   Widget _buildNetworkInfo(VpnNetwork network) {
@@ -297,7 +326,12 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
                   color: Colors.white,
                   size: 24,
                 ),
-              ),
+              )
+                  .animate(onPlay: (c) => c.repeat(reverse: true))
+                  .shimmer(
+                    duration: 3000.ms,
+                    color: Colors.white.withValues(alpha: 0.15),
+                  ),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
@@ -356,7 +390,8 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
           if (network.virtualSubnet != null) ...[
             const SizedBox(height: 12),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
                 color: AppColors.surfaceLight.withValues(alpha: 0.5),
                 borderRadius: BorderRadius.circular(8),
@@ -428,18 +463,26 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
           ),
         ),
         const SizedBox(width: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          decoration: BoxDecoration(
-            color: AppColors.primary.withValues(alpha: 0.1),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Text(
-            '$count',
-            style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: AppColors.primary,
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 200),
+          transitionBuilder: (child, anim) {
+            return ScaleTransition(scale: anim, child: child);
+          },
+          child: Container(
+            key: ValueKey(count),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: AppColors.primary.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              '$count',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppColors.primary,
+              ),
             ),
           ),
         ),
@@ -450,23 +493,25 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
   Widget _buildEmptyMembers() {
     return Container(
       padding: const EdgeInsets.all(32),
-      child: const Column(
+      child: Column(
         children: [
-          Icon(
+          const Icon(
             Icons.people_outline,
             size: 48,
             color: AppColors.textMuted,
-          ),
-          SizedBox(height: 12),
-          Text(
+          )
+              .animate(onPlay: (c) => c.repeat(reverse: true))
+              .moveY(begin: 0, end: -6, duration: 2000.ms),
+          const SizedBox(height: 12),
+          const Text(
             'ยังไม่มีสมาชิก',
             style: TextStyle(
               fontSize: 14,
               color: AppColors.textSecondary,
             ),
           ),
-          SizedBox(height: 4),
-          Text(
+          const SizedBox(height: 4),
+          const Text(
             'แชร์ลิงก์เครือข่ายเพื่อเชิญเพื่อน',
             style: TextStyle(
               fontSize: 12,

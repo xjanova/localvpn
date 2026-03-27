@@ -4,8 +4,10 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../services/license_service.dart';
+import '../services/sound_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/animated_background.dart';
+import '../widgets/cyber_page_route.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/neon_button.dart';
 import 'home_screen.dart';
@@ -37,6 +39,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
   Future<void> _activateLicense() async {
     final key = _licenseController.text.trim();
     if (key.isEmpty) {
+      SoundService().play(SfxType.error);
       _showError('กรุณากรอก License Key');
       return;
     }
@@ -50,8 +53,11 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
     setState(() => _activating = false);
 
     if (success) {
+      SoundService().play(SfxType.success);
+      HapticFeedback.heavyImpact();
       _navigateToHome();
     } else {
+      SoundService().play(SfxType.error);
       _showError(
         widget.licenseService.state.errorMessage ??
             'ไม่สามารถเปิดใช้งาน License ได้',
@@ -70,8 +76,11 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
       if (!mounted) return;
 
       if (success) {
+        SoundService().play(SfxType.coin);
+        HapticFeedback.mediumImpact();
         _navigateToHome();
       } else {
+        SoundService().play(SfxType.error);
         _showError(
           widget.licenseService.state.errorMessage ??
               'ไม่สามารถเริ่มทดลองใช้งานได้',
@@ -87,7 +96,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
 
   void _navigateToHome() {
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(
+      CyberPageRoute(
         builder: (_) => HomeScreen(
           licenseService: widget.licenseService,
         ),
@@ -96,6 +105,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
   }
 
   Future<void> _openPurchaseUrl(String plan) async {
+    SoundService().play(SfxType.tap);
     final url = widget.licenseService.getPurchaseUrl(plan);
     final uri = Uri.tryParse(url);
     if (uri != null) {
@@ -123,6 +133,8 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
     final deviceId = widget.licenseService.deviceId;
     if (deviceId != null) {
       Clipboard.setData(ClipboardData(text: deviceId));
+      SoundService().play(SfxType.coin);
+      HapticFeedback.lightImpact();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -195,7 +207,12 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
               duration: 600.ms,
               curve: Curves.elasticOut,
             )
-            .fadeIn(duration: 400.ms),
+            .fadeIn(duration: 400.ms)
+            .then()
+            .shimmer(
+              duration: 2000.ms,
+              color: Colors.white.withValues(alpha: 0.2),
+            ),
         const SizedBox(height: 16),
         const Text(
           'LocalVPN',
@@ -216,9 +233,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
             color: AppColors.textSecondary,
           ),
           textAlign: TextAlign.center,
-        )
-            .animate()
-            .fadeIn(duration: 500.ms, delay: 400.ms),
+        ).animate().fadeIn(duration: 500.ms, delay: 400.ms),
       ],
     );
   }
@@ -304,7 +319,13 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
                             color: color,
                           ),
                         ),
-                      ),
+                      )
+                          .animate()
+                          .shimmer(
+                            duration: 2000.ms,
+                            delay: (500 + index * 200).ms,
+                            color: color.withValues(alpha: 0.3),
+                          ),
                     ],
                   ],
                 ),
@@ -345,8 +366,13 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
       ),
     )
         .animate()
-        .fadeIn(duration: 400.ms, delay: (300 + index * 100).ms)
-        .slideX(begin: 0.1, end: 0, duration: 400.ms, delay: (300 + index * 100).ms);
+        .fadeIn(
+            duration: 400.ms, delay: (300 + index * 100).ms)
+        .slideX(
+            begin: 0.1,
+            end: 0,
+            duration: 400.ms,
+            delay: (300 + index * 100).ms);
   }
 
   Widget _buildActionButtons() {
@@ -358,12 +384,11 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
             text: 'มี License Key แล้ว',
             icon: Icons.key,
             onPressed: () {
+              SoundService().play(SfxType.notification);
               setState(() => _showLicenseInput = true);
             },
           ),
-        )
-            .animate()
-            .fadeIn(duration: 400.ms, delay: 700.ms),
+        ).animate().fadeIn(duration: 400.ms, delay: 700.ms),
         const SizedBox(height: 12),
         SizedBox(
           width: double.infinity,
@@ -372,12 +397,14 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
             icon: Icons.play_arrow,
             outlined: true,
             color: AppColors.secondary,
-            isLoading: _startingDemo || widget.licenseService.isProcessing,
-            onPressed: (_startingDemo || widget.licenseService.isProcessing) ? null : _startDemo,
+            isLoading:
+                _startingDemo || widget.licenseService.isProcessing,
+            onPressed:
+                (_startingDemo || widget.licenseService.isProcessing)
+                    ? null
+                    : _startDemo,
           ),
-        )
-            .animate()
-            .fadeIn(duration: 400.ms, delay: 800.ms),
+        ).animate().fadeIn(duration: 400.ms, delay: 800.ms),
       ],
     );
   }
@@ -402,6 +429,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
               IconButton(
                 icon: const Icon(Icons.close, color: AppColors.textMuted),
                 onPressed: () {
+                  SoundService().play(SfxType.tap);
                   setState(() => _showLicenseInput = false);
                 },
               ),
@@ -457,7 +485,8 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
     return GestureDetector(
       onTap: _copyDeviceId,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: BoxDecoration(
           color: AppColors.surface.withValues(alpha: 0.4),
           borderRadius: BorderRadius.circular(8),

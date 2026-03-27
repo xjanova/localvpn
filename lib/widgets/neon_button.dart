@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../services/sound_service.dart';
 import '../theme/app_theme.dart';
 
 class NeonButton extends StatefulWidget {
@@ -30,6 +32,7 @@ class _NeonButtonState extends State<NeonButton>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
   late Animation<double> _glowAnimation;
+  bool _pressing = false;
 
   @override
   void initState() {
@@ -50,61 +53,81 @@ class _NeonButtonState extends State<NeonButton>
     super.dispose();
   }
 
+  void _handlePress() {
+    if (widget.onPressed == null || widget.isLoading) return;
+    HapticFeedback.mediumImpact();
+    SoundService().play(SfxType.tapHeavy);
+    widget.onPressed!();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _glowAnimation,
-      builder: (context, child) {
-        return Container(
-          width: widget.width,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: widget.onPressed != null
-                ? [
-                    BoxShadow(
-                      color:
-                          widget.color.withValues(alpha: _glowAnimation.value * 0.3),
-                      blurRadius: 12,
-                      spreadRadius: 0,
+    return GestureDetector(
+      onTapDown: (_) => setState(() => _pressing = true),
+      onTapUp: (_) => setState(() => _pressing = false),
+      onTapCancel: () => setState(() => _pressing = false),
+      child: AnimatedBuilder(
+        animation: _glowAnimation,
+        builder: (context, child) {
+          return AnimatedScale(
+            scale: _pressing ? 0.96 : 1.0,
+            duration: const Duration(milliseconds: 100),
+            curve: Curves.easeOutCubic,
+            child: Container(
+              width: widget.width,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: widget.onPressed != null
+                    ? [
+                        BoxShadow(
+                          color: widget.color.withValues(
+                              alpha: _glowAnimation.value *
+                                  (_pressing ? 0.5 : 0.3)),
+                          blurRadius: _pressing ? 18 : 12,
+                          spreadRadius: _pressing ? 1 : 0,
+                        ),
+                      ]
+                    : null,
+              ),
+              child: widget.outlined
+                  ? OutlinedButton(
+                      onPressed:
+                          widget.isLoading ? null : _handlePress,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: widget.color,
+                        side: BorderSide(
+                          color: widget.color.withValues(alpha: 0.7),
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 14,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: _buildChild(),
+                    )
+                  : ElevatedButton(
+                      onPressed:
+                          widget.isLoading ? null : _handlePress,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: widget.color,
+                        foregroundColor: AppColors.background,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 14,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: _buildChild(),
                     ),
-                  ]
-                : null,
-          ),
-          child: widget.outlined
-              ? OutlinedButton(
-                  onPressed: widget.isLoading ? null : widget.onPressed,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: widget.color,
-                    side: BorderSide(
-                      color: widget.color.withValues(alpha: 0.7),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 14,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: _buildChild(),
-                )
-              : ElevatedButton(
-                  onPressed: widget.isLoading ? null : widget.onPressed,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: widget.color,
-                    foregroundColor: AppColors.background,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 14,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: _buildChild(),
-                ),
-        );
-      },
+            ),
+          );
+        },
+      ),
     );
   }
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 import '../models/license_state.dart';
@@ -6,8 +7,10 @@ import '../services/file_transfer_service.dart';
 import '../services/license_service.dart';
 import '../services/network_service.dart';
 import '../services/p2p_service.dart';
+import '../services/sound_service.dart';
 import '../services/vpn_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/cyber_page_route.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/neon_button.dart';
 import '../widgets/status_indicator.dart';
@@ -28,12 +31,17 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   int _currentIndex = 0;
   late final NetworkService _networkService;
   late final VpnService _vpnService;
   late final P2pService _p2pService;
   late final FileTransferService _fileTransferService;
+
+  // Bottom nav icon animation controllers
+  late final List<AnimationController> _navIconControllers;
+
+  bool _wasConnected = false;
 
   @override
   void initState() {
@@ -43,6 +51,15 @@ class _HomeScreenState extends State<HomeScreen> {
     _p2pService = P2pService();
     _fileTransferService = FileTransferService();
 
+    // Create animation controllers for each nav icon (5 tabs)
+    _navIconControllers = List.generate(
+      5,
+      (i) => AnimationController(
+        duration: const Duration(milliseconds: 300),
+        vsync: this,
+      ),
+    );
+
     final deviceId = widget.licenseService.deviceId;
     if (deviceId != null) {
       _networkService.configure(
@@ -50,11 +67,9 @@ class _HomeScreenState extends State<HomeScreen> {
         licenseKey: widget.licenseService.state.licenseKey,
       );
 
-      // Wire up P2P service
       _networkService.attachP2p(_p2pService);
       _vpnService.attachP2p(_p2pService);
 
-      // Wire up file transfer
       _fileTransferService.configure(
         p2pService: _p2pService,
         deviceId: deviceId,
@@ -70,7 +85,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _p2pService.addListener(_onP2pChanged);
     _fileTransferService.addListener(_onChanged);
 
-    // Try to auto-rejoin last used network
     _autoRejoinLastNetwork();
   }
 
@@ -81,7 +95,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final slug = last['slug'] as String?;
       final passwordHash = last['password_hash'] as String?;
       if (slug != null) {
-        // Re-join sends the already-hashed password
         await _networkService.joinNetworkRaw(
           slug,
           passwordHash: passwordHash,
@@ -100,7 +113,17 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _onVpnChanged() {
-    if (mounted) setState(() {});
+    if (mounted) {
+      // Play connect/disconnect sound on state change
+      final isNowConnected = _vpnService.isConnected;
+      if (isNowConnected && !_wasConnected) {
+        SoundService().play(SfxType.connect);
+      } else if (!isNowConnected && _wasConnected) {
+        SoundService().play(SfxType.disconnect);
+      }
+      _wasConnected = isNowConnected;
+      setState(() {});
+    }
   }
 
   void _onP2pChanged() {
@@ -111,12 +134,29 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() {});
   }
 
+  void _onTabTapped(int index) {
+    if (index == _currentIndex) return;
+
+    HapticFeedback.selectionClick();
+    SoundService().play(SfxType.tabSwitch);
+
+    // Bounce animation on the tapped icon
+    _navIconControllers[index].forward().then((_) {
+      _navIconControllers[index].reverse();
+    });
+
+    setState(() => _currentIndex = index);
+  }
+
   @override
   void dispose() {
     _networkService.removeListener(_onNetworkChanged);
     _vpnService.removeListener(_onVpnChanged);
     _p2pService.removeListener(_onP2pChanged);
     _fileTransferService.removeListener(_onChanged);
+    for (final c in _navIconControllers) {
+      c.dispose();
+    }
     _networkService.dispose();
     _vpnService.dispose();
     _p2pService.dispose();
@@ -131,20 +171,26 @@ class _HomeScreenState extends State<HomeScreen> {
         decoration: BoxDecoration(
           gradient: AppTheme.backgroundGradient,
         ),
-        child: IndexedStack(
-          index: _currentIndex,
-          children: [
-            _buildHomeTab(),
-            NetworkListScreen(networkService: _networkService),
-            FileTransferScreen(
-              fileTransferService: _fileTransferService,
-              p2pService: _p2pService,
-            ),
-            _buildDevicesTab(),
-            SettingsScreen(
-              licenseService: widget.licenseService,
-            ),
-          ],
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 250),
+          switchInCurve: Curves.easeOut,
+          switchOutCurve: Curves.easeIn,
+          child: IndexedStack(
+            key: ValueKey(_currentIndex),
+            index: _currentIndex,
+            children: [
+              _buildHomeTab(),
+              NetworkListScreen(networkService: _networkService),
+              FileTransferScreen(
+                fileTransferService: _fileTransferService,
+                p2pService: _p2pService,
+              ),
+              _buildDevicesTab(),
+              SettingsScreen(
+                licenseService: widget.licenseService,
+              ),
+            ],
+          ),
         ),
       ),
       bottomNavigationBar: _buildBottomNav(),
@@ -161,38 +207,50 @@ class _HomeScreenState extends State<HomeScreen> {
             width: 1,
           ),
         ),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primary.withValues(alpha: 0.05),
+            blurRadius: 20,
+            offset: const Offset(0, -5),
+          ),
+        ],
       ),
       child: BottomNavigationBar(
         currentIndex: _currentIndex,
-        onTap: (index) => setState(() => _currentIndex = index),
+        onTap: _onTabTapped,
         type: BottomNavigationBarType.fixed,
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.home_outlined),
-            activeIcon: Icon(Icons.home),
-            label: 'หน้าแรก',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.lan_outlined),
-            activeIcon: Icon(Icons.lan),
-            label: 'เครือข่าย',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.folder_shared_outlined),
-            activeIcon: Icon(Icons.folder_shared),
-            label: 'ไฟล์',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.devices_outlined),
-            activeIcon: Icon(Icons.devices),
-            label: 'อุปกรณ์',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.settings_outlined),
-            activeIcon: Icon(Icons.settings),
-            label: 'ตั้งค่า',
-          ),
-        ],
+        items: List.generate(5, (i) {
+          final icons = [
+            [Icons.home_outlined, Icons.home],
+            [Icons.lan_outlined, Icons.lan],
+            [Icons.folder_shared_outlined, Icons.folder_shared],
+            [Icons.devices_outlined, Icons.devices],
+            [Icons.settings_outlined, Icons.settings],
+          ];
+          final labels = ['หน้าแรก', 'เครือข่าย', 'ไฟล์', 'อุปกรณ์', 'ตั้งค่า'];
+
+          return BottomNavigationBarItem(
+            icon: ScaleTransition(
+              scale: Tween<double>(begin: 1.0, end: 1.3).animate(
+                CurvedAnimation(
+                  parent: _navIconControllers[i],
+                  curve: Curves.elasticOut,
+                ),
+              ),
+              child: Icon(icons[i][0]),
+            ),
+            activeIcon: ScaleTransition(
+              scale: Tween<double>(begin: 1.0, end: 1.3).animate(
+                CurvedAnimation(
+                  parent: _navIconControllers[i],
+                  curve: Curves.elasticOut,
+                ),
+              ),
+              child: Icon(icons[i][1]),
+            ),
+            label: labels[i],
+          );
+        }),
       ),
     );
   }
@@ -234,7 +292,12 @@ class _HomeScreenState extends State<HomeScreen> {
             color: Colors.white,
             size: 22,
           ),
-        ),
+        )
+            .animate(onPlay: (c) => c.repeat(reverse: true))
+            .shimmer(
+              duration: 3000.ms,
+              color: Colors.white.withValues(alpha: 0.15),
+            ),
         const SizedBox(width: 12),
         const Expanded(
           child: Column(
@@ -269,122 +332,152 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildConnectionStatus() {
     final isConnected = _vpnService.isConnected;
 
-    return GlassCard(
-      borderColor: isConnected
-          ? AppColors.success.withValues(alpha: 0.3)
-          : AppColors.cardBorder,
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: isConnected
-                      ? AppColors.success.withValues(alpha: 0.1)
-                      : AppColors.surfaceLight,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Icon(
-                  isConnected ? Icons.shield : Icons.shield_outlined,
-                  color: isConnected ? AppColors.success : AppColors.textMuted,
-                  size: 28,
-                ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      isConnected ? 'เชื่อมต่อแล้ว' : 'ไม่ได้เชื่อมต่อ',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: isConnected
-                            ? AppColors.success
-                            : AppColors.textSecondary,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      isConnected
-                          ? 'Virtual IP: ${_vpnService.virtualIp ?? "N/A"}'
-                          : 'เลือกเครือข่ายเพื่อเริ่มเชื่อมต่อ',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: AppColors.textMuted,
-                        fontFamily:
-                            isConnected ? 'monospace' : null,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          // P2P connection stats
-          if (isConnected && _p2pService.isActive) ...[
-            const SizedBox(height: 12),
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 500),
+      curve: Curves.easeOutCubic,
+      child: GlassCard(
+        borderColor: isConnected
+            ? AppColors.success.withValues(alpha: 0.3)
+            : AppColors.cardBorder,
+        child: Column(
+          children: [
             Row(
               children: [
-                _buildP2pStat(
-                  Icons.swap_horiz,
-                  '${_vpnService.directPeers}',
-                  'P2P ตรง',
-                  AppColors.success,
-                ),
-                const SizedBox(width: 12),
-                _buildP2pStat(
-                  Icons.cloud_outlined,
-                  '${_vpnService.relayPeers}',
-                  'ผ่านเซิร์ฟเวอร์',
-                  AppColors.warning,
+                // Animated shield icon
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 400),
+                  width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    color: isConnected
+                        ? AppColors.success.withValues(alpha: 0.1)
+                        : AppColors.surfaceLight,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(
+                    isConnected ? Icons.shield : Icons.shield_outlined,
+                    color:
+                        isConnected ? AppColors.success : AppColors.textMuted,
+                    size: 28,
+                  ),
+                )
+                    .animate(target: isConnected ? 1 : 0)
+                    .scale(
+                      begin: const Offset(1, 1),
+                      end: const Offset(1.1, 1.1),
+                      duration: 600.ms,
+                      curve: Curves.elasticOut,
+                    )
+                    .shimmer(
+                      duration: 2000.ms,
+                      color: isConnected
+                          ? AppColors.success.withValues(alpha: 0.2)
+                          : Colors.transparent,
+                    ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 300),
+                        child: Text(
+                          isConnected ? 'เชื่อมต่อแล้ว' : 'ไม่ได้เชื่อมต่อ',
+                          key: ValueKey(isConnected),
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: isConnected
+                                ? AppColors.success
+                                : AppColors.textSecondary,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        isConnected
+                            ? 'Virtual IP: ${_vpnService.virtualIp ?? "N/A"}'
+                            : 'เลือกเครือข่ายเพื่อเริ่มเชื่อมต่อ',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: AppColors.textMuted,
+                          fontFamily: isConnected ? 'monospace' : null,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
-          ],
-          if (_networkService.currentNetwork != null) ...[
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              child: NeonButton(
-                text: isConnected ? 'ยกเลิกการเชื่อมต่อ' : 'เชื่อมต่อ VPN',
-                color: isConnected ? AppColors.error : AppColors.primary,
-                icon: isConnected ? Icons.stop : Icons.play_arrow,
-                isLoading: _vpnService.isStarting,
-                onPressed: _vpnService.isStarting
-                    ? null
-                    : () async {
-                        if (isConnected) {
-                          await _vpnService.stopVpn();
-                        } else {
-                          final vip = _networkService.ownVirtualIp;
-                          if (vip == null) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('ยังไม่ได้รับ Virtual IP จากเซิร์ฟเวอร์'),
-                              ),
-                            );
-                            return;
-                          }
-                          await _vpnService.startVpn(
-                            virtualIp: vip,
-                            subnet: _networkService.currentNetwork?.virtualSubnet ?? '10.10.0.0/24',
-                            peers: [],
-                          );
-                        }
-                      },
+            // P2P connection stats
+            if (isConnected && _p2pService.isActive) ...[
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  _buildP2pStat(
+                    Icons.swap_horiz,
+                    '${_vpnService.directPeers}',
+                    'P2P ตรง',
+                    AppColors.success,
+                  ),
+                  const SizedBox(width: 12),
+                  _buildP2pStat(
+                    Icons.cloud_outlined,
+                    '${_vpnService.relayPeers}',
+                    'ผ่านเซิร์ฟเวอร์',
+                    AppColors.warning,
+                  ),
+                ],
               ),
-            ),
+            ],
+            if (_networkService.currentNetwork != null) ...[
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: NeonButton(
+                  text: isConnected ? 'ยกเลิกการเชื่อมต่อ' : 'เชื่อมต่อ VPN',
+                  color: isConnected ? AppColors.error : AppColors.primary,
+                  icon: isConnected ? Icons.stop : Icons.play_arrow,
+                  isLoading: _vpnService.isStarting,
+                  onPressed: _vpnService.isStarting
+                      ? null
+                      : () async {
+                          if (isConnected) {
+                            await _vpnService.stopVpn();
+                          } else {
+                            final vip = _networkService.ownVirtualIp;
+                            if (vip == null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                      'ยังไม่ได้รับ Virtual IP จากเซิร์ฟเวอร์'),
+                                ),
+                              );
+                              return;
+                            }
+                            await _vpnService.startVpn(
+                              virtualIp: vip,
+                              subnet: _networkService
+                                      .currentNetwork?.virtualSubnet ??
+                                  '10.10.0.0/24',
+                              peers: [],
+                            );
+                          }
+                        },
+                ),
+              ),
+            ],
           ],
-        ],
+        ),
       ),
-    ).animate().fadeIn(duration: 400.ms, delay: 100.ms).slideY(begin: 0.1, end: 0);
+    ).animate().fadeIn(duration: 400.ms, delay: 100.ms).slideY(
+          begin: 0.1,
+          end: 0,
+        );
   }
 
-  Widget _buildP2pStat(IconData icon, String value, String label, Color color) {
+  Widget _buildP2pStat(
+      IconData icon, String value, String label, Color color) {
     return Expanded(
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
@@ -433,7 +526,9 @@ class _HomeScreenState extends State<HomeScreen> {
               Icons.lan_outlined,
               color: AppColors.textMuted,
               size: 40,
-            ),
+            )
+                .animate(onPlay: (c) => c.repeat(reverse: true))
+                .moveY(begin: 0, end: -6, duration: 2000.ms),
             const SizedBox(height: 8),
             const Text(
               'ยังไม่ได้เข้าร่วมเครือข่าย',
@@ -447,7 +542,7 @@ class _HomeScreenState extends State<HomeScreen> {
               text: 'ค้นหาเครือข่าย',
               icon: Icons.search,
               outlined: true,
-              onPressed: () => setState(() => _currentIndex = 1),
+              onPressed: () => _onTabTapped(1),
             ),
           ],
         ),
@@ -457,7 +552,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return GlassCard(
       onTap: () {
         Navigator.of(context).push(
-          MaterialPageRoute(
+          CyberPageRoute(
             builder: (_) => NetworkDetailScreen(
               networkService: _networkService,
               network: network,
@@ -491,7 +586,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 Icons.arrow_forward_ios,
                 color: AppColors.textMuted,
                 size: 14,
-              ),
+              )
+                  .animate(onPlay: (c) => c.repeat(reverse: true))
+                  .moveX(begin: 0, end: 3, duration: 1000.ms),
             ],
           ),
           const SizedBox(height: 12),
@@ -560,7 +657,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 icon: Icons.add_circle_outline,
                 label: 'สร้างเครือข่าย',
                 color: AppColors.primary,
-                onTap: () => setState(() => _currentIndex = 1),
+                onTap: () => _onTabTapped(1),
               ),
             ),
             const SizedBox(width: 12),
@@ -569,7 +666,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 icon: Icons.search,
                 label: 'ค้นหาเครือข่าย',
                 color: AppColors.secondary,
-                onTap: () => setState(() => _currentIndex = 1),
+                onTap: () => _onTabTapped(1),
               ),
             ),
           ],
@@ -677,16 +774,16 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 20, 20, 0),
-            child: Text(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+            child: const Text(
               'อุปกรณ์ที่รู้จัก',
               style: TextStyle(
                 fontSize: 24,
                 fontWeight: FontWeight.bold,
                 color: AppColors.textPrimary,
               ),
-            ),
+            ).animate().fadeIn(duration: 300.ms),
           ),
           const SizedBox(height: 16),
           Expanded(
@@ -699,7 +796,11 @@ class _HomeScreenState extends State<HomeScreen> {
                           Icons.devices_other,
                           size: 64,
                           color: AppColors.textMuted.withValues(alpha: 0.5),
-                        ),
+                        )
+                            .animate(
+                                onPlay: (c) => c.repeat(reverse: true))
+                            .moveY(begin: 0, end: -8, duration: 2500.ms)
+                            .fadeIn(duration: 400.ms),
                         const SizedBox(height: 16),
                         const Text(
                           'ยังไม่พบอุปกรณ์',
@@ -743,7 +844,8 @@ class _HomeScreenState extends State<HomeScreen> {
                               height: 44,
                               decoration: BoxDecoration(
                                 color: member.isOnline
-                                    ? AppColors.success.withValues(alpha: 0.1)
+                                    ? AppColors.success
+                                        .withValues(alpha: 0.1)
                                     : AppColors.surfaceLight,
                                 borderRadius: BorderRadius.circular(11),
                               ),
@@ -783,7 +885,18 @@ class _HomeScreenState extends State<HomeScreen> {
                             StatusIndicator(isOnline: member.isOnline),
                           ],
                         ),
-                      );
+                      )
+                          .animate()
+                          .fadeIn(
+                            duration: 350.ms,
+                            delay: (index * 60).ms,
+                          )
+                          .slideX(
+                            begin: 0.05,
+                            end: 0,
+                            duration: 350.ms,
+                            delay: (index * 60).ms,
+                          );
                     },
                   ),
           ),

@@ -1,10 +1,12 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:open_file/open_file.dart';
 
 import '../services/file_transfer_service.dart';
 import '../services/p2p_service.dart';
+import '../services/sound_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/neon_button.dart';
@@ -55,6 +57,13 @@ class _FileTransferScreenState extends State<FileTransferScreen>
     final success = await widget.fileTransferService.shareFile(filePath);
 
     if (!mounted) return;
+
+    if (success) {
+      SoundService().play(SfxType.coin);
+      HapticFeedback.heavyImpact();
+    } else {
+      SoundService().play(SfxType.error);
+    }
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(

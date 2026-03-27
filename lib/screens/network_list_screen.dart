@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 import '../models/network.dart';
 import '../services/network_service.dart';
+import '../services/sound_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/cyber_page_route.dart';
 import '../widgets/network_card.dart';
 import 'create_network_screen.dart';
 import 'network_detail_screen.dart';
@@ -70,8 +73,11 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
       if (!mounted) return;
 
       if (success) {
+        SoundService().play(SfxType.success);
+        HapticFeedback.heavyImpact();
         _navigateToDetail(network);
       } else {
+        SoundService().play(SfxType.error);
         _showError(widget.networkService.error ?? 'ไม่สามารถเข้าร่วมได้');
         widget.networkService.clearError();
       }
@@ -81,8 +87,11 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
       if (!mounted) return;
 
       if (success) {
+        SoundService().play(SfxType.success);
+        HapticFeedback.heavyImpact();
         _navigateToDetail(network);
       } else {
+        SoundService().play(SfxType.error);
         _showError(widget.networkService.error ?? 'ไม่สามารถเข้าร่วมได้');
         widget.networkService.clearError();
       }
@@ -90,6 +99,7 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
   }
 
   Future<String?> _showPasswordDialog() async {
+    SoundService().play(SfxType.notification);
     final controller = TextEditingController();
     final result = await showDialog<String>(
       context: context,
@@ -111,11 +121,15 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(ctx),
+              onPressed: () {
+                SoundService().play(SfxType.tap);
+                Navigator.pop(ctx);
+              },
               child: const Text('ยกเลิก'),
             ),
             ElevatedButton(
               onPressed: () {
+                SoundService().play(SfxType.tapHeavy);
                 final pwd = controller.text.trim();
                 Navigator.pop(ctx, pwd.isNotEmpty ? pwd : null);
               },
@@ -133,7 +147,7 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
     final currentNetwork = widget.networkService.currentNetwork;
     if (currentNetwork != null) {
       Navigator.of(context).push(
-        MaterialPageRoute(
+        CyberPageRoute(
           builder: (_) => NetworkDetailScreen(
             networkService: widget.networkService,
             network: currentNetwork,
@@ -165,15 +179,15 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
             padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
             child: Row(
               children: [
-                const Expanded(
-                  child: Text(
+                Expanded(
+                  child: const Text(
                     'เครือข่าย',
                     style: TextStyle(
                       fontSize: 24,
                       fontWeight: FontWeight.bold,
                       color: AppColors.textPrimary,
                     ),
-                  ),
+                  ).animate().fadeIn(duration: 300.ms),
                 ),
                 Container(
                   decoration: BoxDecoration(
@@ -186,8 +200,9 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
                       color: AppColors.primary,
                     ),
                     onPressed: () {
+                      SoundService().play(SfxType.tap);
                       Navigator.of(context).push(
-                        MaterialPageRoute(
+                        CyberPageRoute(
                           builder: (_) => CreateNetworkScreen(
                             networkService: widget.networkService,
                           ),
@@ -195,7 +210,15 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
                       );
                     },
                   ),
-                ),
+                )
+                    .animate()
+                    .fadeIn(duration: 300.ms, delay: 100.ms)
+                    .scale(
+                      begin: const Offset(0.8, 0.8),
+                      end: const Offset(1, 1),
+                      duration: 300.ms,
+                      delay: 100.ms,
+                    ),
               ],
             ),
           ),
@@ -226,13 +249,26 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
                 setState(() => _searchQuery = value);
               },
             ),
-          ),
+          ).animate().fadeIn(duration: 300.ms, delay: 150.ms),
           const SizedBox(height: 16),
           Expanded(
             child: widget.networkService.isLoading && !_hasLoaded
-                ? const Center(
-                    child: CircularProgressIndicator(
-                      color: AppColors.primary,
+                ? Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const CircularProgressIndicator(
+                          color: AppColors.primary,
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'กำลังโหลด...',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: AppColors.textMuted,
+                          ),
+                        ),
+                      ],
                     ),
                   )
                 : networks.isEmpty
@@ -242,7 +278,8 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
                         backgroundColor: AppColors.surface,
                         onRefresh: _loadNetworks,
                         child: ListView.builder(
-                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          padding:
+                              const EdgeInsets.symmetric(horizontal: 20),
                           itemCount: networks.length,
                           itemBuilder: (context, index) {
                             final network = networks[index];
@@ -270,7 +307,10 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
             Icons.wifi_tethering_off,
             size: 64,
             color: AppColors.textMuted.withValues(alpha: 0.5),
-          ),
+          )
+              .animate(onPlay: (c) => c.repeat(reverse: true))
+              .moveY(begin: 0, end: -8, duration: 2500.ms)
+              .fadeIn(duration: 400.ms),
           const SizedBox(height: 16),
           const Text(
             'ไม่พบเครือข่าย',
@@ -290,8 +330,9 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
           const SizedBox(height: 20),
           ElevatedButton.icon(
             onPressed: () {
+              SoundService().play(SfxType.tap);
               Navigator.of(context).push(
-                MaterialPageRoute(
+                CyberPageRoute(
                   builder: (_) => CreateNetworkScreen(
                     networkService: widget.networkService,
                   ),

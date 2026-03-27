@@ -5,8 +5,10 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../database/database_helper.dart';
 import '../models/license_state.dart';
 import '../services/license_service.dart';
+import '../services/sound_service.dart';
 import '../services/update_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/cyber_page_route.dart';
 import '../widgets/glass_card.dart';
 import '../widgets/neon_button.dart';
 import 'license_gate_screen.dart';
@@ -25,6 +27,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final UpdateService _updateService = UpdateService();
+  final SoundService _soundService = SoundService();
   bool _autoConnect = false;
 
   @override
@@ -54,6 +57,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _deactivateLicense() async {
+    SoundService().play(SfxType.notification);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -68,11 +72,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
+            onPressed: () {
+              SoundService().play(SfxType.tap);
+              Navigator.pop(ctx, false);
+            },
             child: const Text('ยกเลิก'),
           ),
           ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
+            onPressed: () {
+              SoundService().play(SfxType.disconnect);
+              Navigator.pop(ctx, true);
+            },
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.error,
             ),
@@ -92,7 +102,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
 
     Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(
+      CyberPageRoute(
         builder: (_) => LicenseGateScreen(
           licenseService: widget.licenseService,
         ),
@@ -105,6 +115,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final deviceId = widget.licenseService.deviceId;
     if (deviceId != null) {
       Clipboard.setData(ClipboardData(text: deviceId));
+      SoundService().play(SfxType.coin);
+      HapticFeedback.lightImpact();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -138,6 +150,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _buildUpdateSection(),
             const SizedBox(height: 16),
             _buildPreferencesSection(),
+            const SizedBox(height: 16),
+            _buildSoundSection(),
             const SizedBox(height: 16),
             _buildAboutSection(),
             const SizedBox(height: 16),
@@ -268,7 +282,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
           Row(
             children: [
-              Container(
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
                 width: 40,
                 height: 40,
                 decoration: BoxDecoration(
@@ -325,11 +340,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 SizedBox(
                   height: 32,
                   child: ElevatedButton(
-                    onPressed: () => _updateService.downloadUpdate(),
+                    onPressed: () {
+                      SoundService().play(SfxType.tapHeavy);
+                      _updateService.downloadUpdate();
+                    },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.warning,
                       foregroundColor: AppColors.background,
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 12),
                     ),
                     child: const Text(
                       'ดาวน์โหลด',
@@ -343,8 +362,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     Icons.refresh,
                     color: AppColors.primary,
                   ),
-                  onPressed: () =>
-                      _updateService.checkForUpdate(force: true),
+                  onPressed: () {
+                    SoundService().play(SfxType.tap);
+                    _updateService.checkForUpdate(force: true);
+                  },
                 ),
             ],
           ),
@@ -399,8 +420,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Switch(
                 value: _autoConnect,
                 onChanged: (value) {
+                  SoundService().play(SfxType.toggle);
+                  HapticFeedback.selectionClick();
                   setState(() => _autoConnect = value);
-                  DatabaseHelper().setSetting('auto_connect', value.toString());
+                  DatabaseHelper()
+                      .setSetting('auto_connect', value.toString());
                 },
               ),
             ],
@@ -408,6 +432,82 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
     ).animate().fadeIn(duration: 400.ms, delay: 300.ms);
+  }
+
+  Widget _buildSoundSection() {
+    return GlassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'เสียง',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                transitionBuilder: (child, anim) {
+                  return ScaleTransition(scale: anim, child: child);
+                },
+                child: Icon(
+                  _soundService.enabled
+                      ? Icons.volume_up
+                      : Icons.volume_off,
+                  key: ValueKey(_soundService.enabled),
+                  color: _soundService.enabled
+                      ? AppColors.primary
+                      : AppColors.textMuted,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'เอฟเฟกต์เสียง 16-bit',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    Text(
+                      'เสียงตอบรับเมื่อกดปุ่มและเปลี่ยนสถานะ',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: _soundService.enabled,
+                onChanged: (value) {
+                  HapticFeedback.selectionClick();
+                  setState(() {
+                    _soundService.setEnabled(value);
+                  });
+                  // Play a test sound if enabling
+                  if (value) {
+                    Future.delayed(const Duration(milliseconds: 100), () {
+                      SoundService().play(SfxType.coin);
+                    });
+                  }
+                },
+              ),
+            ],
+          ),
+        ],
+      ),
+    ).animate().fadeIn(duration: 400.ms, delay: 350.ms);
   }
 
   Widget _buildAboutSection() {
