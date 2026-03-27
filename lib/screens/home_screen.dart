@@ -8,6 +8,7 @@ import '../services/license_service.dart';
 import '../services/network_service.dart';
 import '../services/p2p_service.dart';
 import '../services/sound_service.dart';
+import '../services/torrent_service.dart';
 import '../services/vpn_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/cyber_page_route.dart';
@@ -18,6 +19,7 @@ import 'file_transfer_screen.dart';
 import 'network_list_screen.dart';
 import 'network_detail_screen.dart';
 import 'settings_screen.dart';
+import 'torrent/global_torrent_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final LicenseService licenseService;
@@ -37,6 +39,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   late final VpnService _vpnService;
   late final P2pService _p2pService;
   late final FileTransferService _fileTransferService;
+  late final TorrentService _torrentService;
 
   // Bottom nav icon animation controllers
   late final List<AnimationController> _navIconControllers;
@@ -50,10 +53,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _vpnService = VpnService();
     _p2pService = P2pService();
     _fileTransferService = FileTransferService();
+    _torrentService = TorrentService();
 
-    // Create animation controllers for each nav icon (5 tabs)
+    // Create animation controllers for each nav icon (6 tabs)
     _navIconControllers = List.generate(
-      5,
+      6,
       (i) => AnimationController(
         duration: const Duration(milliseconds: 300),
         vsync: this,
@@ -78,6 +82,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _p2pService.onFileMessage = (ip, data) {
         _fileTransferService.handleMessage(ip, data);
       };
+
+      _torrentService.configure(
+        machineId: deviceId,
+        licenseKey: widget.licenseService.state.licenseKey,
+        displayName: _networkService.members.isNotEmpty
+            ? null
+            : 'Device-${deviceId.substring(0, 8)}',
+      );
     }
 
     _networkService.addListener(_onNetworkChanged);
@@ -161,6 +173,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _vpnService.dispose();
     _p2pService.dispose();
     _fileTransferService.dispose();
+    _torrentService.dispose();
     super.dispose();
   }
 
@@ -185,6 +198,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 fileTransferService: _fileTransferService,
                 p2pService: _p2pService,
               ),
+              GlobalTorrentScreen(torrentService: _torrentService),
               _buildDevicesTab(),
               SettingsScreen(
                 licenseService: widget.licenseService,
@@ -219,15 +233,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         currentIndex: _currentIndex,
         onTap: _onTabTapped,
         type: BottomNavigationBarType.fixed,
-        items: List.generate(5, (i) {
+        items: List.generate(6, (i) {
           final icons = [
             [Icons.home_outlined, Icons.home],
             [Icons.lan_outlined, Icons.lan],
             [Icons.folder_shared_outlined, Icons.folder_shared],
+            [Icons.cloud_download_outlined, Icons.cloud_download],
             [Icons.devices_outlined, Icons.devices],
             [Icons.settings_outlined, Icons.settings],
           ];
-          final labels = ['หน้าแรก', 'เครือข่าย', 'ไฟล์', 'อุปกรณ์', 'ตั้งค่า'];
+          final labels = ['หน้าแรก', 'เครือข่าย', 'ไฟล์', 'Torrent', 'อุปกรณ์', 'ตั้งค่า'];
 
           return BottomNavigationBarItem(
             icon: ScaleTransition(
