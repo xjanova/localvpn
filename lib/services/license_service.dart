@@ -344,10 +344,26 @@ class LicenseService extends ChangeNotifier {
       final data = jsonDecode(response.body) as Map<String, dynamic>;
 
       if (response.statusCode == 200 && data['has_license'] == true) {
-        final licenseKey = data['license_key'] as String?;
+        // License key is nested under data.data.license_key
+        final licenseData = data['data'] as Map<String, dynamic>?;
+        final licenseKey = licenseData?['license_key'] as String?;
+        final licenseType = licenseData?['license_type'] as String?;
         if (licenseKey != null) {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString(_prefLicenseKey, _encrypt(licenseKey));
+
+          // For free licenses, set free mode directly without re-validating
+          if (licenseType == 'free') {
+            _state = LicenseState(
+              status: LicenseStatus.free,
+              licenseKey: licenseKey,
+              licenseType: 'free',
+              deviceId: _deviceId,
+            );
+            notifyListeners();
+            return;
+          }
+
           await validate(licenseKey);
           return;
         }
@@ -481,14 +497,24 @@ class LicenseService extends ChangeNotifier {
   }
 
   void clearError() {
-    _state = _state.copyWith(errorMessage: null);
+    _state = LicenseState(
+      status: _state.status,
+      licenseKey: _state.licenseKey,
+      licenseType: _state.licenseType,
+      expiresAt: _state.expiresAt,
+      deviceId: _state.deviceId,
+      demoMinutesLeft: _state.demoMinutesLeft,
+      // errorMessage intentionally omitted = null
+    );
     notifyListeners();
   }
 
   /// Set free mode for users without a license.
+  /// Preserves any existing license key (e.g. free license from backend).
   void setFreeMode() {
     _state = LicenseState(
       status: LicenseStatus.free,
+      licenseKey: _state.licenseKey,
       licenseType: 'free',
       deviceId: _deviceId,
     );
