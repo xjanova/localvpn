@@ -113,8 +113,8 @@ class NetworkService extends ChangeNotifier {
       final body = <String, dynamic>{
         'name': name.trim(),
         'is_public': isPublic,
-        'machine_id': _deviceId,
-        'display_name': _displayName,
+        'machine_id': _deviceId ?? '',
+        'display_name': _displayName ?? 'Owner',
         'license_key': _licenseKey ?? '',
       };
 

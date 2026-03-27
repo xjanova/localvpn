@@ -207,13 +207,13 @@ class FileTransferService extends ChangeNotifier {
 
   Map<String, String> get _headers => {
         'Content-Type': 'application/json',
-        if (_deviceId != null) 'X-Device-Id': _deviceId!,
+        if (_deviceId case final id?) 'X-Device-Id': id,
       };
 
   Map<String, dynamic> get _authBody => {
         'machine_id': _deviceId ?? '',
         'license_key': _licenseKey ?? '',
-        if (_networkSlug != null) 'slug': _networkSlug!,
+        if (_networkSlug case final slug?) 'slug': slug,
       };
 
   void configure({
