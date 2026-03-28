@@ -101,6 +101,7 @@ class P2pService extends ChangeNotifier {
 
   // State
   bool _isActive = false;
+  bool _isStarting = false;
   bool get isActive => _isActive;
 
   String? _error;
@@ -127,7 +128,9 @@ class P2pService extends ChangeNotifier {
 
   /// Start P2P service for a network
   Future<bool> start(String networkSlug) async {
+    if (_isStarting) return false;
     if (_isActive) await stop();
+    _isStarting = true;
 
     _networkSlug = networkSlug;
     _error = null;
@@ -160,9 +163,20 @@ class P2pService extends ChangeNotifier {
       );
 
       _isActive = true;
+      _isStarting = false;
       notifyListeners();
       return true;
     } catch (e) {
+      // Clean up resources on failure to prevent leaks
+      _signalPollTimer?.cancel();
+      _signalPollTimer = null;
+      _keepAliveTimer?.cancel();
+      _keepAliveTimer = null;
+      _udpSocket?.close();
+      _udpSocket = null;
+      _localPort = null;
+      _isStarting = false;
+
       _error = 'ไม่สามารถเริ่ม P2P ได้: $e';
       debugPrint('P2P start error: $e');
       notifyListeners();
@@ -416,14 +430,21 @@ class P2pService extends ChangeNotifier {
           )
           .timeout(const Duration(seconds: 5));
 
+      if (!_isActive) return;
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final signals = data['signals'] as List? ?? [];
 
         for (final s in signals) {
-          final signal =
-              SignalMessage.fromJson(s as Map<String, dynamic>);
-          _handleSignal(signal);
+          if (!_isActive) return;
+          try {
+            final signal =
+                SignalMessage.fromJson(s as Map<String, dynamic>);
+            await _handleSignal(signal);
+          } catch (e) {
+            debugPrint('P2P signal parse error: $e');
+          }
         }
       }
     } catch (e) {
@@ -432,7 +453,7 @@ class P2pService extends ChangeNotifier {
   }
 
   /// Handle a received signaling message
-  void _handleSignal(SignalMessage signal) {
+  Future<void> _handleSignal(SignalMessage signal) async {
     switch (signal.type) {
       case 'punch_request':
         // Peer wants to punch to us - punch back
@@ -453,7 +474,7 @@ class P2pService extends ChangeNotifier {
           _initiateHolePunch(signal.fromVirtualIp, peerIp, peerPort);
 
           // Send response signal
-          _sendSignal(
+          await _sendSignal(
             targetVirtualIp: signal.fromVirtualIp,
             type: 'punch_response',
             payload: {
@@ -477,7 +498,7 @@ class P2pService extends ChangeNotifier {
           if (peer != null) {
             peer.publicPort = peerPort;
           }
-          _initiateHolePunch(signal.fromVirtualIp, peerIp, peerPort);
+          await _initiateHolePunch(signal.fromVirtualIp, peerIp, peerPort);
         }
         break;
 
@@ -582,7 +603,9 @@ class P2pService extends ChangeNotifier {
 
     final header = Uint8List(4);
     for (int i = 0; i < 4; i++) {
-      header[i] = int.parse(parts[i]);
+      final octet = int.tryParse(parts[i]);
+      if (octet == null || octet < 0 || octet > 255) return data;
+      header[i] = octet;
     }
 
     final packet = Uint8List(4 + data.length);

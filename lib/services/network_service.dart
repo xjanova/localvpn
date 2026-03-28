@@ -431,25 +431,25 @@ class NetworkService extends ChangeNotifier {
     }
   }
 
-  void _startHeartbeat() {
+  Future<void> _startHeartbeat() async {
     _stopHeartbeat();
 
-    // Start P2P service if attached
+    // Start P2P service if attached — await to ensure it's ready before heartbeat
     if (_p2pService != null && _currentNetwork != null) {
-      _p2pService!.start(_currentNetwork!.slug);
+      await _p2pService!.start(_currentNetwork!.slug);
     }
 
     _heartbeatTimer = Timer.periodic(
       const Duration(seconds: 15),
       (_) => _sendHeartbeat(),
     );
-    _sendHeartbeat();
+    await _sendHeartbeat();
   }
 
-  void _stopHeartbeat() {
+  Future<void> _stopHeartbeat() async {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
-    _p2pService?.stop();
+    await _p2pService?.stop();
   }
 
   Future<void> _sendHeartbeat() async {
@@ -485,8 +485,13 @@ class NetworkService extends ChangeNotifier {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final peers = data['peers'] as List?;
         if (peers != null) {
-          _members =
-              peers.map((m) => NetworkMember.fromJson(m)).toList();
+          try {
+            _members =
+                peers.map((m) => NetworkMember.fromJson(m as Map<String, dynamic>)).toList();
+          } catch (e) {
+            debugPrint('Heartbeat peer parse error: $e');
+            return;
+          }
 
           // Feed peer list to P2P service for hole punching
           _p2pService?.updatePeers(_members);

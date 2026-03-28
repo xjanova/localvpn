@@ -547,7 +547,7 @@ class FileTransferService extends ChangeNotifier {
   }
 
   /// Received a chunk from a seeder
-  void _handleChunkResponse(String fromVip, String payload) {
+  Future<void> _handleChunkResponse(String fromVip, String payload) async {
     // Format: {hash}|{chunkIndex}|{base64data}
     final firstPipe = payload.indexOf('|');
     if (firstPipe == -1) return;
@@ -593,7 +593,7 @@ class FileTransferService extends ChangeNotifier {
 
     // Check if all chunks received
     if (transfer.completedChunks.length >= transfer.totalChunks) {
-      _assembleFile(transfer);
+      await _assembleFile(transfer);
     } else {
       notifyListeners();
     }
@@ -689,6 +689,7 @@ class FileTransferService extends ChangeNotifier {
   void dispose() {
     _chunkBuffers.clear();
     _pendingChunks.clear();
+    _p2pService = null;
     super.dispose();
   }
 }

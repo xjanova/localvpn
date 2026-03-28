@@ -135,7 +135,10 @@ class VpnService extends ChangeNotifier {
     // Extract destination IP from IPv4 header (bytes 16-19)
     final destIp = '${packet[16]}.${packet[17]}.${packet[18]}.${packet[19]}';
 
-    _p2pService!.sendToPeer(destIp, packet);
+    _p2pService!.sendToPeer(destIp, packet).catchError((e) {
+      debugPrint('P2P send error to $destIp: $e');
+      return false;
+    });
   }
 
   /// Handle incoming P2P data → inject into TUN
