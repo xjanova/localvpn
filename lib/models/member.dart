@@ -58,6 +58,7 @@ class NetworkMember {
       if (virtualIp != null) 'virtual_ip': virtualIp,
       if (publicIp != null) 'public_ip': publicIp,
       if (publicPort != null) 'public_port': publicPort,
+      if (vpnGatewayCountry != null) 'vpn_gateway_country': vpnGatewayCountry,
       'is_online': isOnline,
       if (lastHeartbeat != null)
         'last_heartbeat': lastHeartbeat!.toIso8601String(),

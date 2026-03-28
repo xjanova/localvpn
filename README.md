@@ -40,6 +40,12 @@ Think of it as **Hamachi + BitTorrent**, built for mobile.
 - **Auto-seeding** — Automatically seed files after downloading
 - **Chunk Verification** — SHA-256 hash verification for data integrity
 
+### VPN Proxy
+- **Country Selection** — Choose which country to route through (JP, US, KR free — all countries for Premium)
+- **VPN Gateway** — Premium host routes entire LAN through VPN — all members share the same exit IP
+- **OpenVPN Integration** — Powered by VPN Gate public relay servers
+- **Game Matchmaking** — LAN members exit from same IP for online game co-op (e.g., Arena Breakout)
+
 ### Security
 - **License-based Authentication** — Device + license key validation
 - **Encrypted Communication** — All signaling through HTTPS/WSS
@@ -108,12 +114,14 @@ lib/
 │   ├── network_detail_screen.dart
 │   ├── create_network_screen.dart
 │   ├── file_transfer_screen.dart
+│   ├── vpn_proxy_screen.dart      # VPN country selection UI
 │   ├── settings_screen.dart
 │   └── license_gate_screen.dart
 ├── services/          # Business logic
 │   ├── network_service.dart       # Network join/leave/heartbeat
 │   ├── p2p_service.dart           # UDP hole punching & STUN
 │   ├── vpn_service.dart           # TUN interface & packet routing
+│   ├── vpn_proxy_service.dart     # VPN Proxy (OpenVPN country bypass)
 │   ├── file_transfer_service.dart # BitTorrent-style swarm transfer
 │   ├── license_service.dart       # License validation
 │   └── update_service.dart        # OTA updates
@@ -138,6 +146,7 @@ lib/
 | `DELETE` | `/api/v1/localvpn/files/{fileId}` | Remove shared file |
 | `POST` | `/api/v1/localvpn/files/seed` | Register as seeder |
 | `GET` | `/api/v1/localvpn/files/{fileId}/seeders` | Get file seeders |
+| `GET` | `/api/v1/localvpn/proxy-servers` | VPN proxy server list (by country) |
 
 ---
 
@@ -162,6 +171,19 @@ lib/
 4. Chunks are requested from **multiple seeders** simultaneously
 5. After download, the device **auto-registers as a new seeder**
 6. File integrity verified via **SHA-256 hash**
+
+---
+
+## Freemium Model
+
+| Feature | Free | Premium |
+|---------|------|---------|
+| Virtual LAN | Unlimited rooms | Unlimited rooms |
+| Members per room | 5 | 50 |
+| VPN Proxy countries | JP, US, KR | All countries |
+| VPN Gateway (host routes LAN) | No | Yes |
+| File sharing | Yes | Yes |
+| WireGuard encryption | Yes | Yes |
 
 ---
 
