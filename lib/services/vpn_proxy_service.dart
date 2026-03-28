@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -52,6 +53,9 @@ class VpnProxyService extends ChangeNotifier {
 
   bool _isLoading = false;
   bool get isLoading => _isLoading;
+
+  int? _currentPing;
+  int? get currentPing => _currentPing;
 
   String? _lastCountryCode;
   String? get lastCountryCode => _lastCountryCode;
@@ -244,6 +248,53 @@ class VpnProxyService extends ChangeNotifier {
       _connectedCountry = null;
       notifyListeners();
     }
+  }
+
+  /// Ping a server to measure latency
+  Future<int?> pingServer(ProxyServer server) async {
+    try {
+      final sw = Stopwatch()..start();
+      final socket = await Socket.connect(
+        server.ip,
+        443,
+        timeout: const Duration(seconds: 3),
+      );
+      sw.stop();
+      socket.destroy();
+      final ms = sw.elapsedMilliseconds;
+      server.measuredPing = ms;
+      return ms;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Ping the best server for each country (background)
+  Future<void> pingAllCountries() async {
+    for (final country in _countries) {
+      final server = country.bestServer;
+      if (server != null) {
+        final ms = await pingServer(server);
+        if (ms != null && _status == VpnProxyStatus.connected &&
+            _connectedCountry == country.countryCode) {
+          _currentPing = ms;
+        }
+      }
+    }
+    notifyListeners();
+  }
+
+  /// Continuously ping connected server
+  Future<void> pingConnected() async {
+    if (_connectedCountry == null) return;
+    final country = _countries
+        .where((c) => c.countryCode == _connectedCountry)
+        .firstOrNull;
+    if (country?.bestServer == null) return;
+
+    final ms = await pingServer(country!.bestServer!);
+    _currentPing = ms;
+    notifyListeners();
   }
 
   void clearError() {

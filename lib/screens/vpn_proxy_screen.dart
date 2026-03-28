@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -8,6 +10,8 @@ import '../services/network_service.dart';
 import '../services/vpn_proxy_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass_card.dart';
+import '../widgets/latency_gauge.dart';
+import '../widgets/vpn_mascot.dart';
 
 class VpnProxyScreen extends StatefulWidget {
   final VpnProxyService vpnProxyService;
@@ -26,23 +30,54 @@ class VpnProxyScreen extends StatefulWidget {
 }
 
 class _VpnProxyScreenState extends State<VpnProxyScreen> {
+  Timer? _pingTimer;
+
   @override
   void initState() {
     super.initState();
     widget.vpnProxyService.addListener(_onChanged);
     if (widget.vpnProxyService.countries.isEmpty) {
-      widget.vpnProxyService.fetchServers();
+      widget.vpnProxyService.fetchServers().then((_) {
+        widget.vpnProxyService.pingAllCountries();
+      });
     }
   }
 
   @override
   void dispose() {
+    _pingTimer?.cancel();
     widget.vpnProxyService.removeListener(_onChanged);
     super.dispose();
   }
 
   void _onChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {});
+
+    // Start/stop ping timer based on connection status
+    if (widget.vpnProxyService.status == VpnProxyStatus.connected &&
+        _pingTimer == null) {
+      _pingTimer = Timer.periodic(
+        const Duration(seconds: 5),
+        (_) => widget.vpnProxyService.pingConnected(),
+      );
+      widget.vpnProxyService.pingConnected();
+    } else if (widget.vpnProxyService.status != VpnProxyStatus.connected) {
+      _pingTimer?.cancel();
+      _pingTimer = null;
+    }
+  }
+
+  bool get _isInNetwork => widget.networkService.currentNetwork != null;
+  bool get _isPremium => widget.licenseService.state.isPaid;
+
+  MascotState get _mascotState {
+    return switch (widget.vpnProxyService.status) {
+      VpnProxyStatus.connecting => MascotState.connecting,
+      VpnProxyStatus.connected => MascotState.connected,
+      VpnProxyStatus.error => MascotState.error,
+      _ => MascotState.idle,
+    };
   }
 
   @override
@@ -51,75 +86,26 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
       child: RefreshIndicator(
         color: AppColors.primary,
         backgroundColor: AppColors.surface,
-        onRefresh: () => widget.vpnProxyService.fetchServers(),
+        onRefresh: () async {
+          await widget.vpnProxyService.fetchServers();
+          widget.vpnProxyService.pingAllCountries();
+        },
         child: CustomScrollView(
           slivers: [
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              sliver: SliverToBoxAdapter(child: _buildHeader()),
-            ),
-            if (_isConnectedOrConnecting)
-              SliverPadding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                sliver: SliverToBoxAdapter(child: _buildConnectionCard()),
-              ),
-            // Show LAN routing info for Premium users hosting while VPN is active
-            if (_isConnectedOrConnecting && _isInNetwork && _isPremium)
-              SliverPadding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                sliver: SliverToBoxAdapter(
-                  child: GlassCard(
-                    child: Row(
-                      children: [
-                        Icon(Icons.lan, color: AppColors.primary, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            'สมาชิกในวง LAN จะออก IP เดียวกัน (${widget.vpnProxyService.connectedCountry ?? ""})',
-                            style: TextStyle(
-                              color: AppColors.primary,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            // Warning for free users in network
-            if (!_isConnectedOrConnecting && _isInNetwork && !_isPremium)
-              SliverPadding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                sliver: SliverToBoxAdapter(
-                  child: GlassCard(
-                    child: Row(
-                      children: [
-                        Icon(Icons.info_outline,
-                            color: Colors.orange, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            'คุณอยู่ในวง LAN อยู่ — ออกจากวงก่อนใช้ VPN ฟรี หรืออัพเกรด Premium เพื่อใช้พร้อมกัน',
-                            style: TextStyle(
-                              color: Colors.orange.shade200,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
+            // === Mascot + Status Hero ===
+            SliverToBoxAdapter(child: _buildHero()),
+
+            // === LAN info banners ===
+            if (_isConnected && _isInNetwork && _isPremium)
+              _sliverPad(_buildLanRoutingBanner()),
+            if (!_isConnected && _isInNetwork && !_isPremium)
+              _sliverPad(_buildLanWarningBanner()),
+
+            // === Error ===
             if (widget.vpnProxyService.error != null)
-              SliverPadding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                sliver: SliverToBoxAdapter(child: _buildErrorCard()),
-              ),
+              _sliverPad(_buildErrorCard()),
+
+            // === Content ===
             if (widget.vpnProxyService.isLoading)
               const SliverFillRemaining(
                 child: Center(
@@ -127,40 +113,20 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
                 ),
               )
             else ...[
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                sliver: SliverToBoxAdapter(
-                  child: Text(
-                    'เลือกประเทศ',
-                    style: TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ),
+              _sliverPad(_buildSectionTitle('เลือกประเทศ'), top: 8),
               _buildCountryGrid(),
               if (widget.vpnProxyService.lockedCountries.isNotEmpty) ...[
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                  sliver: SliverToBoxAdapter(
-                    child: Row(
-                      children: [
-                        Icon(Icons.lock_outline,
-                            size: 16, color: AppColors.textMuted),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Premium Only',
-                          style: TextStyle(
+                _sliverPad(
+                  Row(children: [
+                    Icon(Icons.lock_outline, size: 14, color: AppColors.textMuted),
+                    const SizedBox(width: 6),
+                    Text('Premium Only',
+                        style: TextStyle(
                             color: AppColors.textMuted,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600)),
+                  ]),
+                  top: 12,
                 ),
                 _buildLockedGrid(),
               ],
@@ -172,193 +138,260 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
     );
   }
 
-  bool get _isConnectedOrConnecting =>
+  bool get _isConnected =>
       widget.vpnProxyService.status == VpnProxyStatus.connected ||
       widget.vpnProxyService.status == VpnProxyStatus.connecting;
 
-  Widget _buildHeader() {
-    return Row(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            gradient: AppTheme.primaryGradient,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: const Icon(Icons.public, color: Colors.white, size: 24),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'VPN Proxy',
-                style: TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                _isPremium
-                    ? 'Premium - ทุกประเทศ + โฮสต์ LAN ผ่าน VPN'
-                    : 'Free - มุดเดี่ยว 3 ประเทศ',
-                style: TextStyle(
-                  color: _isPremium ? AppColors.primary : AppColors.textMuted,
-                  fontSize: 13,
-                ),
-              ),
-            ],
-          ),
-        ),
-        IconButton(
-          onPressed: () => widget.vpnProxyService.fetchServers(),
-          icon: Icon(Icons.refresh, color: AppColors.textSecondary),
-        ),
-      ],
+  Widget _sliverPad(Widget child, {double top = 4}) {
+    return SliverPadding(
+      padding: EdgeInsets.fromLTRB(16, top, 16, 4),
+      sliver: SliverToBoxAdapter(child: child),
     );
   }
 
-  Widget _buildConnectionCard() {
+  Widget _buildSectionTitle(String text) {
+    return Text(text,
+        style: TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 14,
+            fontWeight: FontWeight.w600));
+  }
+
+  // ─────────────────────────────────────────────
+  // HERO: Mascot + Status + Gauge
+  // ─────────────────────────────────────────────
+  Widget _buildHero() {
     final svc = widget.vpnProxyService;
-    final isConnecting = svc.status == VpnProxyStatus.connecting;
     final country = svc.countries
         .where((c) => c.countryCode == svc.connectedCountry)
         .firstOrNull;
 
-    return GlassCard(
-      margin: const EdgeInsets.only(top: 12),
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
       child: Column(
         children: [
-          Row(
-            children: [
-              // Country flag
-              Text(
-                country?.flag ?? '',
-                style: const TextStyle(fontSize: 36),
+          // Mascot
+          VpnMascot(
+            state: _mascotState,
+            size: 140,
+            countryFlag: country?.flag,
+          ).animate().fadeIn(duration: 500.ms).scale(
+                begin: const Offset(0.8, 0.8),
+                duration: 600.ms,
+                curve: Curves.elasticOut,
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      country?.countryName ?? svc.connectedCountry ?? '',
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color:
-                                isConnecting ? Colors.orange : Colors.green,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          isConnecting ? 'กำลังเชื่อมต่อ...' : 'เชื่อมต่อแล้ว',
-                          style: TextStyle(
-                            color: isConnecting
-                                ? Colors.orange
-                                : Colors.green,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          if (svc.status == VpnProxyStatus.connected) ...[
-            const SizedBox(height: 12),
+
+          const SizedBox(height: 8),
+
+          // Status text
+          Text(
+            _statusText,
+            style: TextStyle(
+              color: _statusColor,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ).animate().fadeIn(delay: 200.ms),
+
+          if (country != null && _isConnected) ...[
+            const SizedBox(height: 2),
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                if (svc.byteIn != null)
-                  _buildStat(Icons.arrow_downward, svc.byteIn!, 'Download'),
-                if (svc.byteOut != null)
-                  _buildStat(Icons.arrow_upward, svc.byteOut!, 'Upload'),
-                if (svc.duration != null)
-                  _buildStat(
-                    Icons.timer_outlined,
-                    _formatDuration(svc.duration!),
-                    'Duration',
-                  ),
+                Text(country.flag, style: const TextStyle(fontSize: 18)),
+                const SizedBox(width: 6),
+                Text(
+                  country.countryName,
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
+                ),
               ],
             ),
           ],
+
+          // Latency gauge (when connected)
+          if (svc.status == VpnProxyStatus.connected) ...[
+            const SizedBox(height: 8),
+            LatencyGauge(pingMs: svc.currentPing, size: 140)
+                .animate()
+                .fadeIn(delay: 300.ms)
+                .slideY(begin: 0.2, duration: 400.ms),
+          ],
+
+          // Stats row (when connected)
+          if (svc.status == VpnProxyStatus.connected) ...[
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _buildStatChip(Icons.arrow_downward, svc.byteIn ?? '0', 'DL'),
+                _buildStatChip(Icons.arrow_upward, svc.byteOut ?? '0', 'UL'),
+                _buildStatChip(Icons.timer_outlined,
+                    _fmtDuration(svc.duration), 'Time'),
+              ],
+            ).animate().fadeIn(delay: 400.ms),
+          ],
+
           const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: isConnecting ? null : () => svc.disconnect(),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red.shade700,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                padding: const EdgeInsets.symmetric(vertical: 12),
+
+          // Connect/Disconnect button
+          _buildPowerButton(),
+
+          // Premium badge
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              _isPremium
+                  ? 'PREMIUM - ทุกประเทศ + VPN Gateway'
+                  : 'FREE - 3 ประเทศ (JP, US, KR)',
+              style: TextStyle(
+                color: _isPremium ? AppColors.primary : AppColors.textMuted,
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
               ),
-              icon: isConnecting
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                  : const Icon(Icons.power_settings_new, size: 20),
-              label: Text(isConnecting ? 'กำลังเชื่อมต่อ...' : 'ตัดการเชื่อมต่อ'),
             ),
           ),
         ],
       ),
-    ).animate().fadeIn(duration: 300.ms).slideY(begin: -0.1);
-  }
-
-  Widget _buildStat(IconData icon, String value, String label) {
-    return Column(
-      children: [
-        Icon(icon, size: 16, color: AppColors.textMuted),
-        const SizedBox(height: 2),
-        Text(
-          value,
-          style: const TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        Text(
-          label,
-          style: TextStyle(
-            color: AppColors.textMuted,
-            fontSize: 10,
-          ),
-        ),
-      ],
     );
   }
 
-  String _formatDuration(Duration d) {
-    final h = d.inHours;
+  String get _statusText {
+    return switch (widget.vpnProxyService.status) {
+      VpnProxyStatus.disconnected => 'พร้อมเชื่อมต่อ',
+      VpnProxyStatus.connecting => 'กำลังเชื่อมต่อ...',
+      VpnProxyStatus.connected => 'เชื่อมต่อแล้ว',
+      VpnProxyStatus.disconnecting => 'กำลังตัดการเชื่อมต่อ...',
+      VpnProxyStatus.error => 'เกิดข้อผิดพลาด',
+    };
+  }
+
+  Color get _statusColor {
+    return switch (widget.vpnProxyService.status) {
+      VpnProxyStatus.connected => AppColors.success,
+      VpnProxyStatus.connecting ||
+      VpnProxyStatus.disconnecting => AppColors.warning,
+      VpnProxyStatus.error => AppColors.error,
+      _ => AppColors.textSecondary,
+    };
+  }
+
+  Widget _buildStatChip(IconData icon, String value, String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceLight,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.cardBorder),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: AppColors.primary),
+          const SizedBox(width: 4),
+          Text(value,
+              style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold)),
+          const SizedBox(width: 3),
+          Text(label,
+              style: TextStyle(color: AppColors.textMuted, fontSize: 9)),
+        ],
+      ),
+    );
+  }
+
+  String _fmtDuration(Duration? d) {
+    if (d == null) return '0:00';
     final m = d.inMinutes.remainder(60);
     final s = d.inSeconds.remainder(60);
-    if (h > 0) return '${h}h ${m}m';
-    return '${m}m ${s}s';
+    if (d.inHours > 0) return '${d.inHours}:${m.toString().padLeft(2, '0')}h';
+    return '$m:${s.toString().padLeft(2, '0')}';
+  }
+
+  Widget _buildPowerButton() {
+    final svc = widget.vpnProxyService;
+    final isActive = svc.status == VpnProxyStatus.connected ||
+        svc.status == VpnProxyStatus.connecting;
+
+    return GestureDetector(
+      onTap: isActive
+          ? () {
+              HapticFeedback.heavyImpact();
+              svc.disconnect();
+            }
+          : null,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 300),
+        width: 56,
+        height: 56,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: isActive
+              ? LinearGradient(
+                  colors: [Colors.red.shade700, Colors.red.shade900])
+              : null,
+          color: isActive ? null : AppColors.surfaceLight,
+          border: Border.all(
+            color: isActive
+                ? Colors.red.shade500
+                : AppColors.cardBorder,
+            width: 2,
+          ),
+          boxShadow: isActive
+              ? [
+                  BoxShadow(
+                    color: Colors.red.withValues(alpha: 0.3),
+                    blurRadius: 16,
+                    spreadRadius: 2,
+                  )
+                ]
+              : null,
+        ),
+        child: Icon(
+          Icons.power_settings_new,
+          color: isActive ? Colors.white : AppColors.textMuted,
+          size: 28,
+        ),
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // BANNERS
+  // ─────────────────────────────────────────────
+  Widget _buildLanRoutingBanner() {
+    return GlassCard(
+      child: Row(
+        children: [
+          Icon(Icons.lan, color: AppColors.success, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'VPN Gateway: สมาชิกในวง LAN ออก IP เดียวกัน',
+              style: TextStyle(color: AppColors.success, fontSize: 12),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLanWarningBanner() {
+    return GlassCard(
+      child: Row(
+        children: [
+          Icon(Icons.info_outline, color: Colors.orange, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'อยู่ในวง LAN — ออกจากวงก่อนใช้ VPN ฟรี หรืออัพเกรด Premium',
+              style: TextStyle(color: Colors.orange.shade200, fontSize: 12),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildErrorCard() {
@@ -368,15 +401,12 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
           Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 20),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              widget.vpnProxyService.error!,
-              style: TextStyle(color: Colors.orange.shade200, fontSize: 13),
-            ),
+            child: Text(widget.vpnProxyService.error!,
+                style: TextStyle(color: Colors.orange.shade200, fontSize: 13)),
           ),
           IconButton(
             onPressed: () => widget.vpnProxyService.clearError(),
-            icon:
-                Icon(Icons.close, size: 18, color: AppColors.textMuted),
+            icon: Icon(Icons.close, size: 18, color: AppColors.textMuted),
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(),
           ),
@@ -385,6 +415,9 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
     );
   }
 
+  // ─────────────────────────────────────────────
+  // COUNTRY GRIDS
+  // ─────────────────────────────────────────────
   Widget _buildCountryGrid() {
     return SliverPadding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -393,23 +426,23 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
           crossAxisCount: 2,
           mainAxisSpacing: 10,
           crossAxisSpacing: 10,
-          childAspectRatio: 1.6,
+          childAspectRatio: 1.5,
         ),
         delegate: SliverChildBuilderDelegate(
           (context, index) {
             final country = widget.vpnProxyService.countries[index];
             final isConnected =
-                widget.vpnProxyService.connectedCountry ==
-                    country.countryCode &&
+                widget.vpnProxyService.connectedCountry == country.countryCode &&
                 widget.vpnProxyService.status == VpnProxyStatus.connected;
 
             return _CountryCard(
               country: country,
               isConnected: isConnected,
               onTap: () => _onCountryTap(country),
-            ).animate(delay: (index * 50).ms).fadeIn().scale(
-                  begin: const Offset(0.95, 0.95),
-                  duration: 200.ms,
+            ).animate(delay: (index * 60).ms).fadeIn().scale(
+                  begin: const Offset(0.92, 0.92),
+                  duration: 250.ms,
+                  curve: Curves.easeOutCubic,
                 );
           },
           childCount: widget.vpnProxyService.countries.length,
@@ -442,23 +475,18 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
     );
   }
 
-  /// Check if user is currently in a Virtual LAN network
-  bool get _isInNetwork => widget.networkService.currentNetwork != null;
-
-  /// Check if user has premium license
-  bool get _isPremium => widget.licenseService.state.isPaid;
-
+  // ─────────────────────────────────────────────
+  // ACTIONS
+  // ─────────────────────────────────────────────
   void _onCountryTap(ProxyCountry country) {
     HapticFeedback.mediumImpact();
 
-    // Free user hosting a network → block VPN proxy
     if (_isInNetwork && !_isPremium) {
       _showHostVpnPremiumDialog();
       return;
     }
 
     if (widget.vpnProxyService.status == VpnProxyStatus.connected) {
-      // Disconnect first, then connect to new country
       widget.vpnProxyService.disconnect().then((_) {
         Future.delayed(const Duration(milliseconds: 500), () {
           widget.vpnProxyService.connectToCountry(country);
@@ -475,22 +503,18 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            Icon(Icons.workspace_premium, color: Colors.amber, size: 24),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                'Premium Only',
-                style: TextStyle(color: AppColors.textPrimary, fontSize: 18),
-              ),
-            ),
-          ],
-        ),
+        title: Row(children: [
+          Icon(Icons.workspace_premium, color: Colors.amber, size: 24),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text('Premium Only',
+                style: TextStyle(color: AppColors.textPrimary, fontSize: 18)),
+          ),
+        ]),
         content: const Text(
-          'ใช้ VPN พร้อมกับโฮสต์ Virtual LAN ได้เฉพาะ Premium\n\n'
-          'Premium: สมาชิกในวงจะออก IP เดียวกันกับประเทศที่คุณเลือก\n\n'
-          'หากต้องการใช้ VPN แบบฟรี ให้ออกจากเครือข่ายก่อน',
+          'ใช้ VPN พร้อมโฮสต์ Virtual LAN ได้เฉพาะ Premium\n\n'
+          'Premium: สมาชิกในวงจะออก IP เดียวกัน\n\n'
+          'ใช้ VPN ฟรี → ออกจากเครือข่ายก่อน',
           style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
         ),
         actions: [
@@ -499,10 +523,7 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
             child: Text('ปิด', style: TextStyle(color: AppColors.textMuted)),
           ),
           ElevatedButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              // TODO: Navigate to pricing
-            },
+            onPressed: () => Navigator.pop(ctx),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.primary,
               foregroundColor: Colors.white,
@@ -522,20 +543,16 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            Icon(Icons.workspace_premium, color: Colors.amber, size: 24),
-            const SizedBox(width: 8),
-            const Text(
-              'Premium Only',
-              style: TextStyle(color: AppColors.textPrimary, fontSize: 18),
-            ),
-          ],
-        ),
+        title: Row(children: [
+          Icon(Icons.workspace_premium, color: Colors.amber, size: 24),
+          const SizedBox(width: 8),
+          const Text('Premium Only',
+              style: TextStyle(color: AppColors.textPrimary, fontSize: 18)),
+        ]),
         content: const Text(
           'อัพเกรดเป็น Premium เพื่อ:\n'
-          '- ใช้ VPN ได้ทุกประเทศ\n'
-          '- โฮสต์ LAN + VPN พร้อมกัน\n'
+          '- VPN ทุกประเทศ\n'
+          '- VPN Gateway พาลูก LAN มุดด้วย\n'
           '- สมาชิกในวงออก IP เดียวกัน',
           style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
         ),
@@ -545,10 +562,7 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
             child: Text('ปิด', style: TextStyle(color: AppColors.textMuted)),
           ),
           ElevatedButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              // Navigate to pricing
-            },
+            onPressed: () => Navigator.pop(ctx),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.primary,
               foregroundColor: Colors.white,
@@ -563,6 +577,9 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
   }
 }
 
+// ─────────────────────────────────────────────
+// COUNTRY CARD (with latency bar)
+// ─────────────────────────────────────────────
 class _CountryCard extends StatelessWidget {
   final ProxyCountry country;
   final bool isConnected;
@@ -576,73 +593,110 @@ class _CountryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final ping = country.bestServer?.measuredPing;
+
     return GestureDetector(
       onTap: onTap,
       child: Container(
         decoration: BoxDecoration(
           gradient: isConnected
-              ? LinearGradient(colors: [
-                  Colors.green.shade900.withValues(alpha: 0.5),
-                  Colors.green.shade800.withValues(alpha: 0.3),
-                ])
-              : null,
-          color: isConnected ? null : AppColors.surfaceLight,
-          borderRadius: BorderRadius.circular(14),
+              ? LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    AppColors.success.withValues(alpha: 0.15),
+                    AppColors.success.withValues(alpha: 0.05),
+                  ],
+                )
+              : LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    AppColors.surfaceLight,
+                    AppColors.surface,
+                  ],
+                ),
+          borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: isConnected ? Colors.green.shade600 : AppColors.cardBorder,
+            color: isConnected
+                ? AppColors.success.withValues(alpha: 0.6)
+                : AppColors.cardBorder,
             width: isConnected ? 2 : 1,
           ),
+          boxShadow: isConnected
+              ? [
+                  BoxShadow(
+                    color: AppColors.success.withValues(alpha: 0.1),
+                    blurRadius: 12,
+                    spreadRadius: 1,
+                  )
+                ]
+              : null,
         ),
         padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
+            // Flag + Name + Status dot
             Row(
               children: [
                 Text(country.flag, style: const TextStyle(fontSize: 28)),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
-                    country.countryName,
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        country.countryName,
+                        style: const TextStyle(
+                          color: AppColors.textPrimary,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      Text(
+                        '${country.serverCount} servers',
+                        style: TextStyle(
+                            color: AppColors.textMuted, fontSize: 10),
+                      ),
+                    ],
                   ),
                 ),
                 if (isConnected)
                   Container(
                     width: 10,
                     height: 10,
-                    decoration: const BoxDecoration(
+                    decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: Colors.green,
+                      color: AppColors.success,
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.success.withValues(alpha: 0.5),
+                          blurRadius: 6,
+                        ),
+                      ],
                     ),
                   ),
               ],
             ),
+
+            // Latency bar + speed
             Row(
               children: [
-                Icon(Icons.dns_outlined,
-                    size: 12, color: AppColors.textMuted),
-                const SizedBox(width: 4),
-                Text(
-                  '${country.serverCount} servers',
-                  style:
-                      TextStyle(color: AppColors.textMuted, fontSize: 11),
+                // Latency bar
+                Expanded(
+                  child: _LatencyBar(pingMs: ping),
                 ),
                 const SizedBox(width: 8),
-                Icon(Icons.speed, size: 12, color: AppColors.textMuted),
-                const SizedBox(width: 4),
+                // Speed
                 Text(
                   country.bestSpeedLabel,
                   style: TextStyle(
                     color: AppColors.primary,
-                    fontSize: 11,
+                    fontSize: 10,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -655,6 +709,68 @@ class _CountryCard extends StatelessWidget {
   }
 }
 
+// ─────────────────────────────────────────────
+// LATENCY BAR (inline in country card)
+// ─────────────────────────────────────────────
+class _LatencyBar extends StatelessWidget {
+  final int? pingMs;
+
+  const _LatencyBar({this.pingMs});
+
+  @override
+  Widget build(BuildContext context) {
+    final ratio = pingMs != null ? (pingMs! / 300).clamp(0.0, 1.0) : 0.0;
+
+    return Row(
+      children: [
+        Icon(Icons.signal_cellular_alt, size: 10, color: _color),
+        const SizedBox(width: 4),
+        Expanded(
+          child: Container(
+            height: 4,
+            decoration: BoxDecoration(
+              color: AppColors.surfaceLight,
+              borderRadius: BorderRadius.circular(2),
+            ),
+            child: FractionallySizedBox(
+              widthFactor: pingMs != null ? (1.0 - ratio).clamp(0.1, 1.0) : 0,
+              alignment: Alignment.centerLeft,
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(colors: [_color, _color.withValues(alpha: 0.5)]),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text(
+          pingMs != null ? '${pingMs}ms' : '--',
+          style: TextStyle(
+            color: _color,
+            fontSize: 9,
+            fontWeight: FontWeight.w600,
+            fontFamily: 'monospace',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Color get _color {
+    if (pingMs == null) return AppColors.textMuted;
+    if (pingMs! < 50) return const Color(0xFF69F0AE);
+    if (pingMs! < 100) return const Color(0xFFB2FF59);
+    if (pingMs! < 150) return const Color(0xFFFFD740);
+    if (pingMs! < 250) return const Color(0xFFFF9100);
+    return const Color(0xFFFF5252);
+  }
+}
+
+// ─────────────────────────────────────────────
+// LOCKED COUNTRY CHIP
+// ─────────────────────────────────────────────
 class _LockedCountryChip extends StatelessWidget {
   final ProxyCountry country;
   final VoidCallback onTap;
@@ -667,9 +783,9 @@ class _LockedCountryChip extends StatelessWidget {
       onTap: onTap,
       child: Container(
         decoration: BoxDecoration(
-          color: AppColors.surfaceLight.withValues(alpha: 0.5),
+          color: AppColors.surfaceLight.withValues(alpha: 0.4),
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: AppColors.cardBorder.withValues(alpha: 0.5)),
+          border: Border.all(color: AppColors.cardBorder.withValues(alpha: 0.3)),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
         child: Row(
@@ -681,10 +797,9 @@ class _LockedCountryChip extends StatelessWidget {
               child: Text(
                 country.countryCode,
                 style: TextStyle(
-                  color: AppColors.textMuted,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                ),
+                    color: AppColors.textMuted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500),
                 maxLines: 1,
               ),
             ),

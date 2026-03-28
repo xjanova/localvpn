@@ -11,7 +11,7 @@ class ProxyServer {
   final int uptime;
   final String openvpnConfig; // Base64-encoded OpenVPN config
 
-  const ProxyServer({
+  ProxyServer({
     required this.hostname,
     required this.ip,
     required this.score,
@@ -36,6 +36,9 @@ class ProxyServer {
         uptime: json['uptime'] as int? ?? 0,
         openvpnConfig: json['openvpn_config'] as String? ?? '',
       );
+
+  /// Measured latency (set by client after ping test)
+  int? measuredPing;
 
   /// Speed in Mbps (API returns bytes/s)
   double get speedMbps => speed / 1000000;
