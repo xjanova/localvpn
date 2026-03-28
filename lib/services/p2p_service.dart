@@ -228,6 +228,8 @@ class P2pService extends ChangeNotifier {
 
     for (final peer in onlinePeers) {
       if (peer.virtualIp == null || peer.publicIp == null) continue;
+      // Skip self
+      if (peer.machineId != null && peer.machineId == _deviceId) continue;
       currentVirtualIps.add(peer.virtualIp!);
 
       final existing = _peers[peer.virtualIp!];
