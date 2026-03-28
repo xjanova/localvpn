@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -12,6 +13,12 @@ import '../../services/torrent_service.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/glass_card.dart';
 import '../../widgets/neon_button.dart';
+
+/// Top-level function for compute isolate
+String _hashFileInIsolate(String filePath) {
+  final bytes = File(filePath).readAsBytesSync();
+  return sha256.convert(bytes).toString();
+}
 
 class UploadFileScreen extends StatefulWidget {
   final TorrentService torrentService;
@@ -121,13 +128,12 @@ class _UploadFileScreenState extends State<UploadFileScreen> {
     setState(() => _isHashing = true);
 
     try {
-      final file = File(filePath);
-      final fileBytes = await file.readAsBytes();
-      final digest = sha256.convert(fileBytes);
+      // Use compute isolate to avoid blocking UI for large files
+      final hash = await compute(_hashFileInIsolate, filePath);
 
       if (!mounted) return;
       setState(() {
-        _fileHash = digest.toString();
+        _fileHash = hash;
         _isHashing = false;
       });
     } catch (e) {

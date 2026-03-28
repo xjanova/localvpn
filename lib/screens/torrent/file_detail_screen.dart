@@ -475,7 +475,25 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Download button
+          // Info: Global Torrent is catalog-only, download via LAN
+          if (!hasOnlineSeeders)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, size: 14, color: AppColors.textMuted),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'ต้องมี Seeder ออนไลน์อยู่ใน LAN เดียวกัน จึงจะดาวน์โหลดได้',
+                      style: TextStyle(color: AppColors.textMuted, fontSize: 11),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // Seed button (register yourself as seeder for a file you have)
           SizedBox(
             width: double.infinity,
             height: 44,
@@ -545,11 +563,11 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
                         color: Colors.white,
                       ),
                     )
-                  : const Icon(Icons.download, color: Colors.white, size: 20),
+                  : const Icon(Icons.cloud_upload_outlined, color: Colors.white, size: 20),
               label: Text(
-                hasOnlineSeeders
-                    ? 'ดาวน์โหลด (${onlineSeeders.length} seeders)'
-                    : 'ดาวน์โหลด / เริ่ม Seed',
+                widget.torrentService.seedingFileHashes.contains(file.fileHash)
+                    ? 'กำลัง Seed อยู่'
+                    : 'ลงทะเบียนเป็น Seeder',
                 style: const TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
