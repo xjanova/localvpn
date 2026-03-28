@@ -1,7 +1,7 @@
 name: localvpn
 description: "LocalVPN - Virtual LAN over the Internet"
 publish_to: 'none'
-version: 1.0.15+16
+version: 1.0.16+17
 
 environment:
   sdk: ^3.10.4
