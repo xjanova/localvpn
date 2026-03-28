@@ -96,10 +96,8 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
             SliverToBoxAdapter(child: _buildHero()),
 
             // === LAN info banners ===
-            if (_isConnected && _isInNetwork && _isPremium)
-              _sliverPad(_buildLanRoutingBanner()),
-            if (!_isConnected && _isInNetwork && !_isPremium)
-              _sliverPad(_buildLanWarningBanner()),
+            if (_isConnected && _isInNetwork)
+              _sliverPad(_buildLanPausedBanner()),
 
             // === Error ===
             if (widget.vpnProxyService.error != null)
@@ -241,7 +239,7 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
             padding: const EdgeInsets.only(top: 8),
             child: Text(
               _isPremium
-                  ? 'PREMIUM - ทุกประเทศ + VPN Gateway'
+                  ? 'PREMIUM - VPN ทุกประเทศ'
                   : 'FREE - 3 ประเทศ (JP, US, KR)',
               style: TextStyle(
                 color: _isPremium ? AppColors.primary : AppColors.textMuted,
@@ -360,33 +358,16 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
   // ─────────────────────────────────────────────
   // BANNERS
   // ─────────────────────────────────────────────
-  Widget _buildLanRoutingBanner() {
+  Widget _buildLanPausedBanner() {
     return GlassCard(
       child: Row(
         children: [
-          Icon(Icons.lan, color: AppColors.success, size: 18),
+          Icon(Icons.info_outline, color: AppColors.warning, size: 18),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              'VPN Gateway: สมาชิกในวง LAN ออก IP เดียวกัน',
-              style: TextStyle(color: AppColors.success, fontSize: 12),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildLanWarningBanner() {
-    return GlassCard(
-      child: Row(
-        children: [
-          Icon(Icons.info_outline, color: Colors.orange, size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'อยู่ในวง LAN — ออกจากวงก่อนใช้ VPN ฟรี หรืออัพเกรด Premium',
-              style: TextStyle(color: Colors.orange.shade200, fontSize: 12),
+              'Virtual LAN หยุดชั่วคราว — ปิด VPN เพื่อกลับไปใช้ LAN',
+              style: TextStyle(color: AppColors.warning, fontSize: 12),
             ),
           ),
         ],
@@ -481,11 +462,16 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
   void _onCountryTap(ProxyCountry country) {
     HapticFeedback.mediumImpact();
 
-    if (_isInNetwork && !_isPremium) {
-      _showHostVpnPremiumDialog();
+    // Warn if user is in a LAN — VPN will replace the LAN tunnel
+    if (_isInNetwork) {
+      _showLanVpnWarning(country);
       return;
     }
 
+    _connectToCountry(country);
+  }
+
+  void _connectToCountry(ProxyCountry country) {
     if (widget.vpnProxyService.status == VpnProxyStatus.connected) {
       widget.vpnProxyService.disconnect().then((_) {
         Future.delayed(const Duration(milliseconds: 500), () {
@@ -497,40 +483,44 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
     }
   }
 
-  void _showHostVpnPremiumDialog() {
+  void _showLanVpnWarning(ProxyCountry country) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Row(children: [
-          Icon(Icons.workspace_premium, color: Colors.amber, size: 24),
+          Icon(Icons.warning_amber_rounded, color: AppColors.warning, size: 24),
           const SizedBox(width: 8),
           const Expanded(
-            child: Text('Premium Only',
-                style: TextStyle(color: AppColors.textPrimary, fontSize: 18)),
+            child: Text('Virtual LAN จะหยุดชั่วคราว',
+                style: TextStyle(color: AppColors.textPrimary, fontSize: 16)),
           ),
         ]),
         content: const Text(
-          'ใช้ VPN พร้อมโฮสต์ Virtual LAN ได้เฉพาะ Premium\n\n'
-          'Premium: สมาชิกในวงจะออก IP เดียวกัน\n\n'
-          'ใช้ VPN ฟรี → ออกจากเครือข่ายก่อน',
-          style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
+          'Android อนุญาต VPN ได้ครั้งละ 1 tunnel เท่านั้น\n\n'
+          'เมื่อเปิด VPN Proxy → Virtual LAN จะหยุดทำงานชั่วคราว '
+          'สมาชิกในวงจะเห็นคุณ offline\n\n'
+          'ปิด VPN Proxy → Virtual LAN จะกลับมาทำงานอัตโนมัติ',
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: Text('ปิด', style: TextStyle(color: AppColors.textMuted)),
+            child: Text('ยกเลิก', style: TextStyle(color: AppColors.textMuted)),
           ),
           ElevatedButton(
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _connectToCountry(country);
+            },
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.primary,
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10)),
             ),
-            child: const Text('ดูแพ็กเกจ'),
+            child: const Text('เปิด VPN ต่อ'),
           ),
         ],
       ),
@@ -551,9 +541,9 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
         ]),
         content: const Text(
           'อัพเกรดเป็น Premium เพื่อ:\n'
-          '- VPN ทุกประเทศ\n'
-          '- VPN Gateway พาลูก LAN มุดด้วย\n'
-          '- สมาชิกในวงออก IP เดียวกัน',
+          '- VPN มุดได้ทุกประเทศ\n'
+          '- สมาชิกในวง LAN สูงสุด 50 คน\n'
+          '- ซัพพอร์ตพรีเมียม',
           style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
         ),
         actions: [
