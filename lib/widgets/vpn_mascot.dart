@@ -59,8 +59,13 @@ class _VpnMascotState extends State<VpnMascot> with TickerProviderStateMixin {
     while (mounted) {
       await Future.delayed(Duration(milliseconds: 2000 + Random().nextInt(3000)));
       if (!mounted) return;
-      await _eyeBlinkController.forward();
-      await _eyeBlinkController.reverse();
+      try {
+        await _eyeBlinkController.forward();
+        await _eyeBlinkController.reverse();
+      } catch (_) {
+        // Controller disposed during animation — exit loop
+        return;
+      }
     }
   }
 

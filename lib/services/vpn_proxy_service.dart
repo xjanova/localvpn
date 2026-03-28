@@ -269,18 +269,21 @@ class VpnProxyService extends ChangeNotifier {
     }
   }
 
-  /// Ping the best server for each country (background)
+  /// Ping the best server for each country (background, parallel)
   Future<void> pingAllCountries() async {
+    final futures = <Future>[];
     for (final country in _countries) {
       final server = country.bestServer;
       if (server != null) {
-        final ms = await pingServer(server);
-        if (ms != null && _status == VpnProxyStatus.connected &&
-            _connectedCountry == country.countryCode) {
-          _currentPing = ms;
-        }
+        futures.add(pingServer(server).then((ms) {
+          if (ms != null && _status == VpnProxyStatus.connected &&
+              _connectedCountry == country.countryCode) {
+            _currentPing = ms;
+          }
+        }));
       }
     }
+    await Future.wait(futures);
     notifyListeners();
   }
 

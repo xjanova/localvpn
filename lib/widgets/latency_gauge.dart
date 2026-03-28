@@ -46,7 +46,9 @@ class _LatencyGaugeState extends State<LatencyGauge>
     _needleAnimation = Tween<double>(begin: _currentValue, end: target).animate(
       CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
     );
-    _controller.forward(from: 0).then((_) => _currentValue = target);
+    _controller.forward(from: 0).then((_) {
+      if (mounted) _currentValue = target;
+    });
   }
 
   double _pingToNormalized(int? ping) {
