@@ -14,6 +14,7 @@ class NetworkService extends ChangeNotifier {
 
   final DatabaseHelper _db = DatabaseHelper();
   P2pService? _p2pService;
+  String? _vpnGatewayCountry;
 
   List<VpnNetwork> _publicNetworks = [];
   List<VpnNetwork> get publicNetworks => _publicNetworks;
@@ -58,6 +59,15 @@ class NetworkService extends ChangeNotifier {
 
   /// Get the attached P2P service
   P2pService? get p2pService => _p2pService;
+
+  /// Set VPN gateway country (called by VpnProxyService when connected)
+  void setVpnGateway(String? countryCode) {
+    _vpnGatewayCountry = countryCode;
+  }
+
+  /// Get the current VPN gateway member in the network (if any)
+  NetworkMember? get vpnGatewayMember =>
+      _members.where((m) => m.isVpnGateway).firstOrNull;
 
   Map<String, String> get _headers {
     final h = <String, String>{
@@ -471,6 +481,11 @@ class NetworkService extends ChangeNotifier {
         if (_p2pService!.publicPort != null) {
           body['public_port'] = _p2pService!.publicPort;
         }
+      }
+
+      // VPN gateway info — tells other members this host is routing via VPN
+      if (_vpnGatewayCountry != null) {
+        body['vpn_gateway_country'] = _vpnGatewayCountry;
       }
 
       final response = await http

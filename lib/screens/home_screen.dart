@@ -105,7 +105,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _vpnService.addListener(_onVpnChanged);
     _p2pService.addListener(_onP2pChanged);
     _fileTransferService.addListener(_onChanged);
-    _vpnProxyService.addListener(_onChanged);
+    _vpnProxyService.addListener(_onVpnProxyChanged);
 
     _autoRejoinLastNetwork();
   }
@@ -152,6 +152,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     if (mounted) setState(() {});
   }
 
+  void _onVpnProxyChanged() {
+    // Sync VPN gateway status to network service for heartbeat broadcasting
+    if (_vpnProxyService.status == VpnProxyStatus.connected) {
+      _networkService.setVpnGateway(_vpnProxyService.connectedCountry);
+    } else {
+      _networkService.setVpnGateway(null);
+    }
+    if (mounted) setState(() {});
+  }
+
   void _onChanged() {
     if (mounted) setState(() {});
   }
@@ -176,7 +186,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _vpnService.removeListener(_onVpnChanged);
     _p2pService.removeListener(_onP2pChanged);
     _fileTransferService.removeListener(_onChanged);
-    _vpnProxyService.removeListener(_onChanged);
+    _vpnProxyService.removeListener(_onVpnProxyChanged);
     for (final c in _navIconControllers) {
       c.dispose();
     }
