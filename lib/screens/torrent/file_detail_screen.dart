@@ -29,11 +29,24 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
   List<BtSeeder> _seeders = [];
   bool _isLoading = true;
 
+  bool _isRegistering = false;
+
   @override
   void initState() {
     super.initState();
     _file = widget.initialFile;
+    widget.torrentService.addListener(_onServiceChanged);
     _loadDetail();
+  }
+
+  @override
+  void dispose() {
+    widget.torrentService.removeListener(_onServiceChanged);
+    super.dispose();
+  }
+
+  void _onServiceChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _loadDetail() async {
@@ -461,8 +474,6 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
     );
   }
 
-  bool _isRegistering = false;
-
   Widget _buildDownloadSeedCard(BtFile file) {
     final onlineSeeders = _seeders.where((s) => s.isOnline).toList();
     final hasOnlineSeeders = onlineSeeders.isNotEmpty;
@@ -475,8 +486,67 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Info: Global Torrent is catalog-only, download via LAN
-          if (!hasOnlineSeeders)
+          // Download button (via server relay)
+          if (hasOnlineSeeders && !widget.torrentService.isDownloadingFile)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: ElevatedButton.icon(
+                  onPressed: () async {
+                    final path = await widget.torrentService.downloadFile(file, onlineSeeders);
+                    if (!mounted) return;
+                    if (path != null) {
+                      SoundService().play(SfxType.coin);
+                      HapticFeedback.heavyImpact();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('ดาวน์โหลดสำเร็จ: ${file.fileName}'),
+                          backgroundColor: AppColors.success,
+                        ),
+                      );
+                      _loadDetail();
+                    } else if (widget.torrentService.downloadError != null) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(widget.torrentService.downloadError!),
+                          backgroundColor: AppColors.error,
+                        ),
+                      );
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.success,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  icon: const Icon(Icons.download, color: Colors.white, size: 20),
+                  label: Text('ดาวน์โหลด (${onlineSeeders.length} seeders)'),
+                ),
+              ),
+            ),
+
+          // Download progress
+          if (widget.torrentService.isDownloadingFile)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Column(
+                children: [
+                  LinearProgressIndicator(
+                    value: widget.torrentService.downloadProgress,
+                    backgroundColor: AppColors.surfaceLight,
+                    valueColor: AlwaysStoppedAnimation<Color>(AppColors.success),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'กำลังดาวน์โหลด ${(widget.torrentService.downloadProgress * 100).toStringAsFixed(0)}%',
+                    style: TextStyle(color: AppColors.textMuted, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+
+          if (!hasOnlineSeeders && !widget.torrentService.isDownloadingFile)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Row(
@@ -485,7 +555,7 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      'ต้องมี Seeder ออนไลน์อยู่ใน LAN เดียวกัน จึงจะดาวน์โหลดได้',
+                      'ต้องมี Seeder ออนไลน์จึงจะดาวน์โหลดได้ (ผ่าน server relay)',
                       style: TextStyle(color: AppColors.textMuted, fontSize: 11),
                     ),
                   ),

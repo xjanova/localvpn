@@ -1,8 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 import '../models/bt_models.dart';
 
@@ -555,11 +559,247 @@ class TorrentService extends ChangeNotifier {
     return false;
   }
 
+  // ─── DOWNLOAD VIA SERVER RELAY ───
+
+  bool _isDownloading = false;
+  bool get isDownloadingFile => _isDownloading;
+
+  double _downloadProgress = 0;
+  double get downloadProgress => _downloadProgress;
+
+  String? _downloadError;
+  String? get downloadError => _downloadError;
+
+  /// Download a file via server relay.
+  /// Flow: request chunks → seeder uploads to server → we fetch from server.
+  Future<String?> downloadFile(BtFile file, List<BtSeeder> seeders) async {
+    if (_machineId == null || _licenseKey == null) return null;
+    if (_isDownloading) return null;
+
+    final onlineSeeder = seeders.where((s) => s.isOnline).firstOrNull;
+    if (onlineSeeder == null) {
+      _error = 'ไม่มี Seeder ออนไลน์';
+      notifyListeners();
+      return null;
+    }
+
+    _isDownloading = true;
+    _downloadProgress = 0;
+    _downloadError = null;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final chunkSize = (file.chunkSize != null && file.chunkSize! > 0)
+          ? file.chunkSize!
+          : 32768;
+      final totalChunks = (file.totalChunks != null && file.totalChunks! > 0)
+          ? file.totalChunks!
+          : (file.fileSize / chunkSize).ceil();
+
+      final chunks = <int, Uint8List>{};
+
+      // Process in batches of 5 chunks
+      for (int batchStart = 0; batchStart < totalChunks; batchStart += 5) {
+        final batchEnd = (batchStart + 5).clamp(0, totalChunks);
+        final indices = List.generate(batchEnd - batchStart, (i) => batchStart + i);
+
+        // 1. Request chunks from seeder via relay
+        await http.post(
+          Uri.parse('$_baseUrl/torrent/relay/request'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'machine_id': _machineId,
+            'license_key': _licenseKey,
+            'file_hash': file.fileHash,
+            'chunk_indices': indices,
+            'target_machine_id': onlineSeeder.machineId,
+          }),
+        ).timeout(const Duration(seconds: 10));
+
+        // 2. Wait for seeder to relay chunks (poll with timeout)
+        for (int attempt = 0; attempt < 15; attempt++) {
+          await Future.delayed(const Duration(seconds: 2));
+
+          final fetchResponse = await http.post(
+            Uri.parse('$_baseUrl/torrent/relay/fetch'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'machine_id': _machineId,
+              'license_key': _licenseKey,
+              'file_hash': file.fileHash,
+              'chunk_indices': indices.where((i) => !chunks.containsKey(i)).toList(),
+            }),
+          ).timeout(const Duration(seconds: 10));
+
+          if (fetchResponse.statusCode == 200) {
+            final data = jsonDecode(fetchResponse.body) as Map<String, dynamic>;
+            final received = data['chunks'] as List? ?? [];
+
+            for (final c in received) {
+              final idx = c['chunk_index'] as int;
+              final b64 = c['data'] as String;
+              chunks[idx] = base64Decode(b64);
+            }
+          }
+
+          _downloadProgress = chunks.length / totalChunks;
+          notifyListeners();
+
+          // Check if all chunks in this batch received
+          if (indices.every((i) => chunks.containsKey(i))) break;
+        }
+
+        // Check if batch failed
+        final missing = indices.where((i) => !chunks.containsKey(i)).toList();
+        if (missing.isNotEmpty) {
+          throw Exception('Chunk ${missing.first} ไม่ได้รับจาก seeder (timeout)');
+        }
+      }
+
+      // Assemble file
+      final buffer = BytesBuilder();
+      for (int i = 0; i < totalChunks; i++) {
+        final chunk = chunks[i];
+        if (chunk == null) throw Exception('Missing chunk $i');
+        buffer.add(chunk);
+      }
+
+      final assembled = buffer.toBytes();
+
+      // Verify hash
+      final hash = sha256.convert(assembled).toString();
+      if (hash != file.fileHash) {
+        throw Exception('ไฟล์เสียหาย (hash ไม่ตรง)');
+      }
+
+      // Save file
+      final dir = await getApplicationDocumentsDirectory();
+      final downloadDir = Directory('${dir.path}/LocalVPN/Torrent');
+      if (!await downloadDir.exists()) {
+        await downloadDir.create(recursive: true);
+      }
+      final filePath = '${downloadDir.path}/${file.fileName}';
+      await File(filePath).writeAsBytes(assembled);
+
+      _downloadProgress = 1.0;
+      _isDownloading = false;
+      notifyListeners();
+
+      // Auto-register as seeder
+      _seedingFileHashes.add(file.fileHash);
+      _ensureHeartbeat();
+      await registerSeeder(fileHash: file.fileHash);
+
+      return filePath;
+    } catch (e) {
+      _downloadError = e.toString().replaceFirst(RegExp(r'^Exception:\s*'), '');
+      _isDownloading = false;
+      _downloadProgress = 0;
+      notifyListeners();
+      debugPrint('TorrentService.downloadFile error: $e');
+      return null;
+    }
+  }
+
+  // ─── SEEDER RELAY POLL (background) ───
+
+  Timer? _relayPollTimer;
+
+  /// Start polling for relay requests (when seeding files).
+  void startRelayPoll() {
+    _relayPollTimer?.cancel();
+    _relayPollTimer = Timer.periodic(const Duration(seconds: 3), (_) => _pollRelayRequests());
+  }
+
+  void stopRelayPoll() {
+    _relayPollTimer?.cancel();
+    _relayPollTimer = null;
+  }
+
+  /// Poll for chunk requests and respond with data.
+  Future<void> _pollRelayRequests() async {
+    if (_machineId == null || _licenseKey == null) return;
+    if (_seedingFileHashes.isEmpty) return;
+
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/torrent/relay/poll'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'machine_id': _machineId,
+          'license_key': _licenseKey,
+        }),
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode != 200) return;
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final requests = data['requests'] as List? ?? [];
+
+      for (final req in requests) {
+        final fileHash = req['file_hash'] as String;
+        final chunkIndex = req['chunk_index'] as int;
+        final requester = req['requester'] as String;
+
+        // Read chunk from local file (if we have it)
+        final chunkData = await _readLocalChunk(fileHash, chunkIndex);
+        if (chunkData == null) continue;
+
+        // Upload chunk to server for relay
+        await http.post(
+          Uri.parse('$_baseUrl/torrent/relay/chunk'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'machine_id': _machineId,
+            'license_key': _licenseKey,
+            'file_hash': fileHash,
+            'chunk_index': chunkIndex,
+            'data': base64Encode(chunkData),
+            'target_machine_id': requester,
+          }),
+        ).timeout(const Duration(seconds: 15));
+      }
+    } catch (e) {
+      debugPrint('TorrentService.pollRelay error: $e');
+    }
+  }
+
+  /// Read a chunk from a locally stored file.
+  Future<Uint8List?> _readLocalChunk(String fileHash, int chunkIndex) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final torrentDir = Directory('${dir.path}/LocalVPN/Torrent');
+      if (!await torrentDir.exists()) return null;
+
+      // Find file by checking hash of each file in torrent dir
+      // For efficiency, cache file paths by hash
+      final files = torrentDir.listSync().whereType<File>();
+      for (final file in files) {
+        // Check if this file matches the hash (simplified: read entire file)
+        // In production, should cache hash→path mapping
+        final bytes = await file.readAsBytes();
+        final hash = sha256.convert(bytes).toString();
+        if (hash == fileHash) {
+          final chunkSize = 32768;
+          final start = chunkIndex * chunkSize;
+          if (start >= bytes.length) return null;
+          final end = (start + chunkSize).clamp(0, bytes.length);
+          return Uint8List.fromList(bytes.sublist(start, end));
+        }
+      }
+    } catch (e) {
+      debugPrint('Read chunk error: $e');
+    }
+    return null;
+  }
+
   // ─── CLEANUP ───
 
   @override
   void dispose() {
     stopHeartbeat();
+    stopRelayPoll();
     super.dispose();
   }
 }
