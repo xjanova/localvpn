@@ -206,8 +206,9 @@ class VpnProxyService extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Decode base64 OpenVPN config
-      final configData = utf8.decode(base64Decode(server.openvpnConfig));
+      // Decode base64 OpenVPN config (strip whitespace/newlines from base64)
+      final cleanBase64 = server.openvpnConfig.replaceAll(RegExp(r'\s'), '');
+      final configData = utf8.decode(base64Decode(cleanBase64));
 
       _openvpn.connect(
         configData,
