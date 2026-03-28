@@ -101,6 +101,11 @@ class VpnProxyService extends ChangeNotifier {
     _stage = stage;
     debugPrint('VPN Proxy stage: $stage ($raw)');
 
+    // Don't override disconnecting state with connected (race condition)
+    if (_status == VpnProxyStatus.disconnecting && stage == VPNStage.connected) {
+      return;
+    }
+
     switch (stage) {
       case VPNStage.connected:
         _status = VpnProxyStatus.connected;
