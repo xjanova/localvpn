@@ -4,6 +4,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 
 import '../models/proxy_server.dart';
 import '../services/license_service.dart';
+import '../services/network_service.dart';
 import '../services/vpn_proxy_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass_card.dart';
@@ -11,11 +12,13 @@ import '../widgets/glass_card.dart';
 class VpnProxyScreen extends StatefulWidget {
   final VpnProxyService vpnProxyService;
   final LicenseService licenseService;
+  final NetworkService networkService;
 
   const VpnProxyScreen({
     super.key,
     required this.vpnProxyService,
     required this.licenseService,
+    required this.networkService,
   });
 
   @override
@@ -59,6 +62,57 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
               SliverPadding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 sliver: SliverToBoxAdapter(child: _buildConnectionCard()),
+              ),
+            // Show LAN routing info for Premium users hosting while VPN is active
+            if (_isConnectedOrConnecting && _isInNetwork && _isPremium)
+              SliverPadding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                sliver: SliverToBoxAdapter(
+                  child: GlassCard(
+                    child: Row(
+                      children: [
+                        Icon(Icons.lan, color: AppColors.primary, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'สมาชิกในวง LAN จะออก IP เดียวกัน (${widget.vpnProxyService.connectedCountry ?? ""})',
+                            style: TextStyle(
+                              color: AppColors.primary,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            // Warning for free users in network
+            if (!_isConnectedOrConnecting && _isInNetwork && !_isPremium)
+              SliverPadding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                sliver: SliverToBoxAdapter(
+                  child: GlassCard(
+                    child: Row(
+                      children: [
+                        Icon(Icons.info_outline,
+                            color: Colors.orange, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'คุณอยู่ในวง LAN อยู่ — ออกจากวงก่อนใช้ VPN ฟรี หรืออัพเกรด Premium เพื่อใช้พร้อมกัน',
+                            style: TextStyle(
+                              color: Colors.orange.shade200,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             if (widget.vpnProxyService.error != null)
               SliverPadding(
@@ -147,13 +201,11 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
                 ),
               ),
               Text(
-                widget.vpnProxyService.isPremium
-                    ? 'Premium - ทุกประเทศ'
-                    : 'Free - 3 ประเทศ',
+                _isPremium
+                    ? 'Premium - ทุกประเทศ + โฮสต์ LAN ผ่าน VPN'
+                    : 'Free - มุดเดี่ยว 3 ประเทศ',
                 style: TextStyle(
-                  color: widget.vpnProxyService.isPremium
-                      ? AppColors.primary
-                      : AppColors.textMuted,
+                  color: _isPremium ? AppColors.primary : AppColors.textMuted,
                   fontSize: 13,
                 ),
               ),
@@ -390,8 +442,20 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
     );
   }
 
+  /// Check if user is currently in a Virtual LAN network
+  bool get _isInNetwork => widget.networkService.currentNetwork != null;
+
+  /// Check if user has premium license
+  bool get _isPremium => widget.licenseService.state.isPaid;
+
   void _onCountryTap(ProxyCountry country) {
     HapticFeedback.mediumImpact();
+
+    // Free user hosting a network → block VPN proxy
+    if (_isInNetwork && !_isPremium) {
+      _showHostVpnPremiumDialog();
+      return;
+    }
 
     if (widget.vpnProxyService.status == VpnProxyStatus.connected) {
       // Disconnect first, then connect to new country
@@ -403,6 +467,53 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
     } else {
       widget.vpnProxyService.connectToCountry(country);
     }
+  }
+
+  void _showHostVpnPremiumDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Icon(Icons.workspace_premium, color: Colors.amber, size: 24),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Premium Only',
+                style: TextStyle(color: AppColors.textPrimary, fontSize: 18),
+              ),
+            ),
+          ],
+        ),
+        content: const Text(
+          'ใช้ VPN พร้อมกับโฮสต์ Virtual LAN ได้เฉพาะ Premium\n\n'
+          'Premium: สมาชิกในวงจะออก IP เดียวกันกับประเทศที่คุณเลือก\n\n'
+          'หากต้องการใช้ VPN แบบฟรี ให้ออกจากเครือข่ายก่อน',
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('ปิด', style: TextStyle(color: AppColors.textMuted)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              // TODO: Navigate to pricing
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('ดูแพ็กเกจ'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showPremiumDialog() {
@@ -422,8 +533,11 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
           ],
         ),
         content: const Text(
-          'อัพเกรดเป็น Premium เพื่อใช้ VPN ได้ทุกประเทศ',
-          style: TextStyle(color: AppColors.textSecondary),
+          'อัพเกรดเป็น Premium เพื่อ:\n'
+          '- ใช้ VPN ได้ทุกประเทศ\n'
+          '- โฮสต์ LAN + VPN พร้อมกัน\n'
+          '- สมาชิกในวงออก IP เดียวกัน',
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
         ),
         actions: [
           TextButton(

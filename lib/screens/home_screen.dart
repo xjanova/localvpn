@@ -208,6 +208,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               VpnProxyScreen(
                 vpnProxyService: _vpnProxyService,
                 licenseService: widget.licenseService,
+                networkService: _networkService,
               ),
               NetworkListScreen(
                 networkService: _networkService,
