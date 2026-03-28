@@ -156,7 +156,7 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
             network: currentNetwork,
           ),
         ),
-      );
+      ).then((_) => _loadNetworks());
     }
   }
 
@@ -211,7 +211,7 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
                             licenseService: widget.licenseService,
                           ),
                         ),
-                      );
+                      ).then((_) => _loadNetworks());
                     },
                   ),
                 )
@@ -342,7 +342,7 @@ class _NetworkListScreenState extends State<NetworkListScreen> {
                     licenseService: widget.licenseService,
                   ),
                 ),
-              );
+              ).then((_) => _loadNetworks());
             },
             icon: const Icon(Icons.add),
             label: const Text('สร้างเครือข่าย'),
