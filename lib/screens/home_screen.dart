@@ -9,6 +9,7 @@ import '../services/network_service.dart';
 import '../services/p2p_service.dart';
 import '../services/sound_service.dart';
 import '../services/torrent_service.dart';
+import '../services/vpn_proxy_service.dart';
 import '../services/vpn_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/cyber_page_route.dart';
@@ -20,6 +21,7 @@ import 'network_list_screen.dart';
 import 'network_detail_screen.dart';
 import 'settings_screen.dart';
 import 'torrent/global_torrent_screen.dart';
+import 'vpn_proxy_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final LicenseService licenseService;
@@ -40,6 +42,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   late final P2pService _p2pService;
   late final FileTransferService _fileTransferService;
   late final TorrentService _torrentService;
+  late final VpnProxyService _vpnProxyService;
 
   // Bottom nav icon animation controllers
   late final List<AnimationController> _navIconControllers;
@@ -54,10 +57,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _p2pService = P2pService();
     _fileTransferService = FileTransferService();
     _torrentService = TorrentService();
+    _vpnProxyService = VpnProxyService();
 
-    // Create animation controllers for each nav icon (6 tabs)
+    // Create animation controllers for each nav icon (7 tabs)
     _navIconControllers = List.generate(
-      6,
+      7,
       (i) => AnimationController(
         duration: const Duration(milliseconds: 300),
         vsync: this,
@@ -90,12 +94,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ? null
             : 'Device-${deviceId.substring(0, 8)}',
       );
+
+      _vpnProxyService.configure(
+        deviceId: deviceId,
+        licenseKey: widget.licenseService.state.licenseKey,
+      );
     }
 
     _networkService.addListener(_onNetworkChanged);
     _vpnService.addListener(_onVpnChanged);
     _p2pService.addListener(_onP2pChanged);
     _fileTransferService.addListener(_onChanged);
+    _vpnProxyService.addListener(_onChanged);
 
     _autoRejoinLastNetwork();
   }
@@ -166,6 +176,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _vpnService.removeListener(_onVpnChanged);
     _p2pService.removeListener(_onP2pChanged);
     _fileTransferService.removeListener(_onChanged);
+    _vpnProxyService.removeListener(_onChanged);
     for (final c in _navIconControllers) {
       c.dispose();
     }
@@ -174,6 +185,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _p2pService.dispose();
     _fileTransferService.dispose();
     _torrentService.dispose();
+    _vpnProxyService.dispose();
     super.dispose();
   }
 
@@ -193,6 +205,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             index: _currentIndex,
             children: [
               _buildHomeTab(),
+              VpnProxyScreen(
+                vpnProxyService: _vpnProxyService,
+                licenseService: widget.licenseService,
+              ),
               NetworkListScreen(
                 networkService: _networkService,
                 licenseService: widget.licenseService,
@@ -236,16 +252,17 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         currentIndex: _currentIndex,
         onTap: _onTabTapped,
         type: BottomNavigationBarType.fixed,
-        items: List.generate(6, (i) {
+        items: List.generate(7, (i) {
           final icons = [
             [Icons.home_outlined, Icons.home],
+            [Icons.public_outlined, Icons.public],
             [Icons.lan_outlined, Icons.lan],
             [Icons.folder_shared_outlined, Icons.folder_shared],
             [Icons.cloud_download_outlined, Icons.cloud_download],
             [Icons.devices_outlined, Icons.devices],
             [Icons.settings_outlined, Icons.settings],
           ];
-          final labels = ['หน้าแรก', 'เครือข่าย', 'ไฟล์', 'Torrent', 'อุปกรณ์', 'ตั้งค่า'];
+          final labels = ['หน้าแรก', 'VPN', 'เครือข่าย', 'ไฟล์', 'Torrent', 'อุปกรณ์', 'ตั้งค่า'];
 
           return BottomNavigationBarItem(
             icon: ScaleTransition(
