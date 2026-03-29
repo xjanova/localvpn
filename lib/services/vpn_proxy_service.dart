@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -67,6 +68,16 @@ class VpnProxyService extends ChangeNotifier {
   /// the disconnected-stage callback clearing state mid-reconnect.
   ProxyServer? _pendingReconnect;
 
+  /// Connection timeout timer — auto-disconnects and tries next server
+  /// if connection is not established within the timeout period.
+  Timer? _connectionTimer;
+
+  /// Current server index for fallback retry within a country
+  int _currentServerIndex = 0;
+
+  /// The country we're trying to connect to (for fallback retry)
+  ProxyCountry? _connectingCountry;
+
   void configure({required String deviceId, String? licenseKey}) {
     _deviceId = deviceId;
     _licenseKey = licenseKey;
@@ -115,10 +126,13 @@ class VpnProxyService extends ChangeNotifier {
 
     switch (stage) {
       case VPNStage.connected:
+        _connectionTimer?.cancel();
+        _connectingCountry = null;
         _status = VpnProxyStatus.connected;
         _error = null;
         break;
       case VPNStage.disconnected:
+        _connectionTimer?.cancel();
         // If a reconnect is pending (server switch), auto-connect instead of
         // clearing state. This prevents the race where the old disconnected
         // callback fires after connect() has already set new country/hostname.
@@ -130,16 +144,28 @@ class VpnProxyService extends ChangeNotifier {
         }
         _status = VpnProxyStatus.disconnected;
         _clearConnectionState();
+        _connectingCountry = null;
         break;
       case VPNStage.error:
+        // If we're still in connecting phase and have more servers, try next
+        if (_status == VpnProxyStatus.connecting && _connectingCountry != null) {
+          _connectionTimer?.cancel();
+          debugPrint('VPN error on server — trying next...');
+          _tryNextServer();
+          return;
+        }
+        _connectionTimer?.cancel();
         _status = VpnProxyStatus.error;
         _error = raw.isNotEmpty ? raw : 'VPN connection failed';
         _clearConnectionState();
+        _connectingCountry = null;
         break;
       case VPNStage.denied:
+        _connectionTimer?.cancel();
         _status = VpnProxyStatus.error;
         _error = 'VPN permission denied';
         _clearConnectionState();
+        _connectingCountry = null;
         break;
       default:
         _status = VpnProxyStatus.connecting;
@@ -363,22 +389,33 @@ class VpnProxyService extends ChangeNotifier {
     return fields;
   }
 
-  /// Connect to the best server in a country
+  /// Info about current connection attempt (for UI display)
+  String? get connectingServerInfo {
+    final country = _connectingCountry;
+    if (country == null || _status != VpnProxyStatus.connecting) return null;
+    return 'server ${_currentServerIndex + 1}/${country.servers.length}';
+  }
+
+  /// Connection timeout duration — if not connected within this time,
+  /// try the next server in the country.
+  static const Duration _connectionTimeout = Duration(seconds: 30);
+
+  /// Connect to the best server in a country (with auto-fallback to next server)
   Future<bool> connectToCountry(ProxyCountry country) async {
-    final server = country.bestServer;
-    if (server == null) {
+    if (country.servers.isEmpty) {
       _error = 'ไม่มี server สำหรับประเทศนี้';
       notifyListeners();
       return false;
     }
-    return connect(server);
+    _connectingCountry = country;
+    _currentServerIndex = 0;
+    return _connectToServerAt(country, 0);
   }
 
   /// Switch to a different country — disconnects first, then auto-reconnects
   /// via the _pendingReconnect mechanism (race-condition safe).
   Future<void> switchToCountry(ProxyCountry country) async {
-    final server = country.bestServer;
-    if (server == null) {
+    if (country.servers.isEmpty) {
       _error = 'ไม่มี server สำหรับประเทศนี้';
       notifyListeners();
       return;
@@ -386,17 +423,66 @@ class VpnProxyService extends ChangeNotifier {
 
     if (_status == VpnProxyStatus.connected ||
         _status == VpnProxyStatus.connecting) {
-      _pendingReconnect = server;
+      _connectingCountry = country;
+      _currentServerIndex = 0;
+      _pendingReconnect = country.servers.first;
       await disconnect();
       // _onStageChanged(disconnected) will pick up _pendingReconnect and call connect()
     } else {
-      await connect(server);
+      await connectToCountry(country);
     }
   }
 
-  /// Connect to a specific server
-  Future<bool> connect(ProxyServer server) async {
-    if (_status == VpnProxyStatus.connecting) return false;
+  /// Connect to server at given index within the country, with timeout fallback
+  Future<bool> _connectToServerAt(ProxyCountry country, int index, {bool isRetry = false}) async {
+    if (index >= country.servers.length) {
+      _status = VpnProxyStatus.error;
+      _error = 'ลอง ${country.servers.length} servers แล้ว ไม่สามารถเชื่อมต่อได้';
+      _clearConnectionState();
+      _connectingCountry = null;
+      notifyListeners();
+      return false;
+    }
+    _currentServerIndex = index;
+    return connect(country.servers[index], isRetry: isRetry);
+  }
+
+  /// Try the next server in the current country (called on timeout)
+  void _tryNextServer() {
+    final country = _connectingCountry;
+    if (country == null) return;
+
+    final nextIndex = _currentServerIndex + 1;
+    if (nextIndex >= country.servers.length) {
+      // All servers tried
+      _status = VpnProxyStatus.error;
+      _error = 'ลอง ${country.servers.length} servers แล้ว ไม่สามารถเชื่อมต่อได้';
+      _clearConnectionState();
+      _connectingCountry = null;
+      notifyListeners();
+      // Force disconnect any pending OpenVPN attempt
+      _openvpn.disconnect();
+      return;
+    }
+
+    debugPrint('VPN timeout — trying server ${nextIndex + 1}/${country.servers.length}');
+
+    // Disconnect current attempt, then connect to next server
+    _openvpn.disconnect();
+    // Small delay for cleanup before trying next server
+    Future.delayed(const Duration(milliseconds: 300), () {
+      _connectToServerAt(country, nextIndex, isRetry: true);
+    });
+  }
+
+  /// Connect to a specific server.
+  /// [isRetry] is used internally for server fallback — skips the
+  /// "already connecting" guard.
+  Future<bool> connect(ProxyServer server, {bool isRetry = false}) async {
+    if (!isRetry && _status == VpnProxyStatus.connecting) return false;
+
+    // Cancel any existing connection timeout
+    _connectionTimer?.cancel();
 
     _status = VpnProxyStatus.connecting;
     _error = null;
@@ -410,20 +496,43 @@ class VpnProxyService extends ChangeNotifier {
       final cleanBase64 = server.openvpnConfig.replaceAll(RegExp(r'\s'), '');
       final configData = utf8.decode(base64Decode(cleanBase64));
 
+      // Use filteredConfig to pick one random remote if config has multiple
+      // remote lines (prevents ANR from plugin trying all remotes sequentially)
+      final filteredData = await OpenVPN.filteredConfig(configData) ?? configData;
+
+      // Ensure config ends with newline (plugin appends directives without \n)
+      final normalizedConfig = filteredData.endsWith('\n')
+          ? filteredData
+          : '$filteredData\n';
+
       _openvpn.connect(
-        configData,
+        normalizedConfig,
         server.hostname,
         username: '',
         password: '',
-        certIsRequired: false,
+        // VPN Gate configs already include <ca> certs but don't need client certs.
+        // Set true to prevent plugin from appending "client-cert-not-required"
+        // without a newline (which corrupts the config).
+        certIsRequired: true,
       );
+
+      // Start connection timeout — if not connected within the timeout,
+      // try the next server in the country automatically.
+      _connectionTimer = Timer(_connectionTimeout, () {
+        if (_status == VpnProxyStatus.connecting) {
+          debugPrint('VPN connection timeout for ${server.hostname}');
+          _tryNextServer();
+        }
+      });
 
       await _saveLastCountry(server.countryCode);
       return true;
     } catch (e) {
+      _connectionTimer?.cancel();
       _status = VpnProxyStatus.error;
       _error = 'ไม่สามารถเชื่อมต่อ VPN ได้: $e';
       _clearConnectionState();
+      _connectingCountry = null;
       notifyListeners();
       return false;
     }
@@ -431,6 +540,8 @@ class VpnProxyService extends ChangeNotifier {
 
   /// Disconnect from VPN
   Future<void> disconnect() async {
+    _connectionTimer?.cancel();
+    _connectingCountry = null;
     _status = VpnProxyStatus.disconnecting;
     notifyListeners();
 

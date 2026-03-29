@@ -299,7 +299,11 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
   }
 
   String get _statusText {
-    return switch (widget.vpnProxyService.status) {
+    final svc = widget.vpnProxyService;
+    if (svc.status == VpnProxyStatus.connecting && svc.connectingServerInfo != null) {
+      return 'กำลังเชื่อมต่อ ${svc.connectingServerInfo}...';
+    }
+    return switch (svc.status) {
       VpnProxyStatus.disconnected => 'พร้อมเชื่อมต่อ',
       VpnProxyStatus.connecting => 'กำลังเชื่อมต่อ...',
       VpnProxyStatus.connected => 'เชื่อมต่อแล้ว',
