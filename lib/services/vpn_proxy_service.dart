@@ -63,6 +63,10 @@ class VpnProxyService extends ChangeNotifier {
   String? _lastCountryCode;
   String? get lastCountryCode => _lastCountryCode;
 
+  /// Pending reconnect target — set when switching servers to avoid
+  /// the disconnected-stage callback clearing state mid-reconnect.
+  ProxyServer? _pendingReconnect;
+
   void configure({required String deviceId, String? licenseKey}) {
     _deviceId = deviceId;
     _licenseKey = licenseKey;
@@ -115,23 +119,44 @@ class VpnProxyService extends ChangeNotifier {
         _error = null;
         break;
       case VPNStage.disconnected:
+        // If a reconnect is pending (server switch), auto-connect instead of
+        // clearing state. This prevents the race where the old disconnected
+        // callback fires after connect() has already set new country/hostname.
+        if (_pendingReconnect != null) {
+          final server = _pendingReconnect!;
+          _pendingReconnect = null;
+          connect(server);
+          return; // don't clear state or notify — connect() handles it
+        }
         _status = VpnProxyStatus.disconnected;
-        _connectedCountry = null;
-        _connectedHostname = null;
+        _clearConnectionState();
         break;
       case VPNStage.error:
         _status = VpnProxyStatus.error;
         _error = raw.isNotEmpty ? raw : 'VPN connection failed';
+        _clearConnectionState();
         break;
       case VPNStage.denied:
         _status = VpnProxyStatus.error;
         _error = 'VPN permission denied';
+        _clearConnectionState();
         break;
       default:
         _status = VpnProxyStatus.connecting;
     }
 
     notifyListeners();
+  }
+
+  /// Clear all connection-related state fields.
+  void _clearConnectionState() {
+    _connectedCountry = null;
+    _connectedHostname = null;
+    _connectedIp = null;
+    _currentPing = null;
+    _duration = null;
+    _byteIn = null;
+    _byteOut = null;
   }
 
   Duration? _parseDuration(String durationStr) {
@@ -209,7 +234,6 @@ class VpnProxyService extends ChangeNotifier {
     debugPrint('Trying client-side VPN Gate fetch...');
     const apis = [
       'https://www.vpngate.net/api/iphone/',
-      'http://www.vpngate.net/api/iphone/',
     ];
 
     String? csv;
@@ -263,7 +287,7 @@ class VpnProxyService extends ChangeNotifier {
       servers.add(ProxyServer(
         hostname: fields[0],
         ip: fields[1],
-        score: int.tryParse(fields[3]) ?? 0,
+        score: int.tryParse(fields[2]) ?? 0,
         ping: int.tryParse(fields[3]) ?? 0,
         speed: speed,
         countryName: fields[5],
@@ -289,15 +313,16 @@ class VpnProxyService extends ChangeNotifier {
       grouped.putIfAbsent(s.countryCode, () => []).add(s);
     }
 
-    // Sort each group by speed descending
+    // Sort each group by score descending (consistent with backend)
     _countries = grouped.entries.map((e) {
-      final sorted = e.value..sort((a, b) => b.speed.compareTo(a.speed));
+      final sorted = e.value..sort((a, b) => b.score.compareTo(a.score));
+      final bestSpd = sorted.map((s) => s.speed).reduce((a, b) => a > b ? a : b);
       return ProxyCountry(
         countryCode: e.key,
         countryName: sorted.first.countryName,
-        servers: sorted.take(5).toList(),
+        servers: sorted.take(10).toList(),
         serverCount: sorted.length,
-        bestSpeed: sorted.first.speed,
+        bestSpeed: bestSpd,
       );
     }).toList()
       ..sort((a, b) => b.bestSpeed.compareTo(a.bestSpeed));
@@ -349,6 +374,26 @@ class VpnProxyService extends ChangeNotifier {
     return connect(server);
   }
 
+  /// Switch to a different country — disconnects first, then auto-reconnects
+  /// via the _pendingReconnect mechanism (race-condition safe).
+  Future<void> switchToCountry(ProxyCountry country) async {
+    final server = country.bestServer;
+    if (server == null) {
+      _error = 'ไม่มี server สำหรับประเทศนี้';
+      notifyListeners();
+      return;
+    }
+
+    if (_status == VpnProxyStatus.connected ||
+        _status == VpnProxyStatus.connecting) {
+      _pendingReconnect = server;
+      await disconnect();
+      // _onStageChanged(disconnected) will pick up _pendingReconnect and call connect()
+    } else {
+      await connect(server);
+    }
+  }
+
   /// Connect to a specific server
   Future<bool> connect(ProxyServer server) async {
     if (_status == VpnProxyStatus.connecting) return false;
@@ -357,6 +402,7 @@ class VpnProxyService extends ChangeNotifier {
     _error = null;
     _connectedCountry = server.countryCode;
     _connectedHostname = server.hostname;
+    _connectedIp = server.ip;
     notifyListeners();
 
     try {
@@ -377,8 +423,7 @@ class VpnProxyService extends ChangeNotifier {
     } catch (e) {
       _status = VpnProxyStatus.error;
       _error = 'ไม่สามารถเชื่อมต่อ VPN ได้: $e';
-      _connectedCountry = null;
-      _connectedHostname = null;
+      _clearConnectionState();
       notifyListeners();
       return false;
     }
@@ -394,10 +439,11 @@ class VpnProxyService extends ChangeNotifier {
     // Wait briefly for the stage callback
     await Future.delayed(const Duration(milliseconds: 500));
 
-    if (_status != VpnProxyStatus.disconnected) {
+    // If _pendingReconnect is set, _onStageChanged will handle the transition.
+    // Only force-clear if we're still stuck in disconnecting state.
+    if (_status == VpnProxyStatus.disconnecting && _pendingReconnect == null) {
       _status = VpnProxyStatus.disconnected;
-      _connectedCountry = null;
-      _connectedHostname = null;
+      _clearConnectionState();
       notifyListeners();
     }
   }

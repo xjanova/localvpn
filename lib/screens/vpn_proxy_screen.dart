@@ -517,12 +517,10 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
   }
 
   void _connectToCountry(ProxyCountry country) {
-    if (widget.vpnProxyService.status == VpnProxyStatus.connected) {
-      widget.vpnProxyService.disconnect().then((_) {
-        Future.delayed(const Duration(milliseconds: 500), () {
-          widget.vpnProxyService.connectToCountry(country);
-        });
-      });
+    if (widget.vpnProxyService.status == VpnProxyStatus.connected ||
+        widget.vpnProxyService.status == VpnProxyStatus.connecting) {
+      // Use switchToCountry for race-condition-safe reconnect
+      widget.vpnProxyService.switchToCountry(country);
     } else {
       widget.vpnProxyService.connectToCountry(country);
     }
