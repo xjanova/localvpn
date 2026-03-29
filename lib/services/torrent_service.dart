@@ -257,7 +257,11 @@ class TorrentService extends ChangeNotifier {
     required String fileHash,
     String chunksBitmap = 'all',
   }) async {
-    if (_machineId == null || _licenseKey == null) return false;
+    if (_machineId == null || _licenseKey == null) {
+      _error = 'ยังไม่ได้ตั้งค่า machine_id หรือ license_key';
+      debugPrint('TorrentService.registerSeeder: machineId=$_machineId, licenseKey=${_licenseKey != null ? '***' : 'null'}');
+      return false;
+    }
 
     try {
       final body = {
@@ -278,13 +282,20 @@ class TorrentService extends ChangeNotifier {
           )
           .timeout(const Duration(seconds: 15));
 
+      debugPrint('TorrentService.registerSeeder response: ${response.statusCode} ${response.body.length > 200 ? response.body.substring(0, 200) : response.body}');
+
       final data = _parseResponse(response);
       if (data != null && data['success'] == true) {
         _seedingFileHashes.add(fileHash);
         _ensureHeartbeat();
+        _error = null;
         return true;
+      } else {
+        _error = data?['error'] as String? ?? 'ลงทะเบียน Seeder ล้มเหลว (${response.statusCode})';
+        debugPrint('TorrentService.registerSeeder failed: $_error');
       }
     } catch (e) {
+      _error = 'ลงทะเบียน Seeder ล้มเหลว: $e';
       debugPrint('TorrentService.registerSeeder error: $e');
     }
     return false;
@@ -343,6 +354,7 @@ class TorrentService extends ChangeNotifier {
     required String fileHash,
     required String fileName,
     required int fileSize,
+    String? title,
     String? description,
     String? thumbnailData,
     int? chunkSize,
@@ -361,6 +373,7 @@ class TorrentService extends ChangeNotifier {
         'file_hash': fileHash,
         'file_name': fileName,
         'file_size': fileSize,
+        if (title != null) 'title': title,
         if (description != null) 'description': description,
         if (thumbnailData != null) 'thumbnail_data': thumbnailData,
         if (_displayName != null) 'display_name': _displayName,

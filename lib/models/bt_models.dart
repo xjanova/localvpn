@@ -39,6 +39,7 @@ class BtFile {
   final int id;
   final String fileHash;
   final String fileName;
+  final String? title;
   final int fileSize;
   final String? description;
   final String? thumbnailUrl;
@@ -54,6 +55,7 @@ class BtFile {
     required this.id,
     required this.fileHash,
     required this.fileName,
+    this.title,
     required this.fileSize,
     this.description,
     this.thumbnailUrl,
@@ -71,6 +73,7 @@ class BtFile {
       id: json['id'] as int,
       fileHash: json['file_hash'] as String? ?? '',
       fileName: json['file_name'] as String? ?? '',
+      title: json['title'] as String?,
       fileSize: json['file_size'] as int? ?? 0,
       description: json['description'] as String?,
       thumbnailUrl: json['thumbnail_url'] as String?,
@@ -87,6 +90,9 @@ class BtFile {
           : null,
     );
   }
+
+  /// Display title: use title if available, otherwise file_name.
+  String get displayTitle => (title != null && title!.isNotEmpty) ? title! : fileName;
 
   String get fileSizeFormatted {
     if (fileSize < 1024) return '$fileSize B';

@@ -395,7 +395,7 @@ class _CategoryFilesScreenState extends State<CategoryFilesScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    file.fileName,
+                    file.displayTitle,
                     style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,

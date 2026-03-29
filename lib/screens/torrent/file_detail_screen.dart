@@ -163,15 +163,28 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
                       ),
                     ),
 
-                  // File name
+                  // Title / File name
                   Text(
-                    file.fileName,
+                    file.displayTitle,
                     style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
                       color: AppColors.textPrimary,
                     ),
                   ),
+                  if (file.title != null && file.title!.isNotEmpty && file.title != file.fileName) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      file.fileName,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textMuted,
+                        fontFamily: 'monospace',
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                   const SizedBox(height: 12),
 
                   // Stats row
@@ -502,7 +515,7 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
                       HapticFeedback.heavyImpact();
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text('ดาวน์โหลดสำเร็จ: ${file.fileName}'),
+                          content: Text('ดาวน์โหลดสำเร็จ: ${file.displayTitle}'),
                           backgroundColor: AppColors.success,
                         ),
                       );

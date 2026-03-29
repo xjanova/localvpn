@@ -37,6 +37,7 @@ class UploadFileScreen extends StatefulWidget {
 }
 
 class _UploadFileScreenState extends State<UploadFileScreen> {
+  final _titleController = TextEditingController();
   final _descriptionController = TextEditingController();
 
   BtCategory? _selectedCategory;
@@ -69,6 +70,7 @@ class _UploadFileScreenState extends State<UploadFileScreen> {
 
   @override
   void dispose() {
+    _titleController.dispose();
     _descriptionController.dispose();
     super.dispose();
   }
@@ -159,6 +161,9 @@ class _UploadFileScreenState extends State<UploadFileScreen> {
     HapticFeedback.mediumImpact();
 
     try {
+      final title = _titleController.text.trim().isEmpty
+          ? null
+          : _titleController.text.trim();
       final description = _descriptionController.text.trim().isEmpty
           ? null
           : _descriptionController.text.trim();
@@ -168,6 +173,7 @@ class _UploadFileScreenState extends State<UploadFileScreen> {
         fileHash: _fileHash!,
         fileName: _pickedFile!.name,
         fileSize: _pickedFile!.size,
+        title: title,
         description: description,
       );
 
@@ -247,6 +253,8 @@ class _UploadFileScreenState extends State<UploadFileScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _buildFilePickerCard(),
+              const SizedBox(height: 16),
+              _buildTitleField(),
               const SizedBox(height: 16),
               _buildCategorySelector(),
               const SizedBox(height: 16),
@@ -420,6 +428,73 @@ class _UploadFileScreenState extends State<UploadFileScreen> {
     );
   }
 
+  Widget _buildTitleField() {
+    return GlassCard(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.title, color: AppColors.primary, size: 18),
+              SizedBox(width: 8),
+              Text(
+                'ชื่องาน',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              SizedBox(width: 6),
+              Text(
+                '(ไม่จำเป็น)',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textMuted,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _titleController,
+            enabled: !_isUploading,
+            maxLines: 1,
+            maxLength: 255,
+            style: const TextStyle(
+              fontSize: 14,
+              color: AppColors.textPrimary,
+            ),
+            decoration: InputDecoration(
+              hintText: 'ตั้งชื่องานสำหรับแสดงผล (ถ้าไม่กรอก จะใช้ชื่อไฟล์)',
+              hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 13),
+              filled: true,
+              fillColor: AppColors.background.withValues(alpha: 0.5),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: AppColors.cardBorder),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: AppColors.cardBorder),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide:
+                    const BorderSide(color: AppColors.primary, width: 2),
+              ),
+              counterStyle: const TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 11,
+              ),
+            ),
+          ),
+        ],
+      ),
+    ).animate().fadeIn(duration: 400.ms, delay: 50.ms).slideY(begin: 0.1, end: 0);
+  }
+
   Widget _buildCategorySelector() {
     return GlassCard(
       padding: const EdgeInsets.all(16),
@@ -506,7 +581,7 @@ class _UploadFileScreenState extends State<UploadFileScreen> {
           ),
         ],
       ),
-    ).animate().fadeIn(duration: 400.ms, delay: 100.ms).slideY(begin: 0.1, end: 0);
+    ).animate().fadeIn(duration: 400.ms, delay: 150.ms).slideY(begin: 0.1, end: 0);
   }
 
   Widget _buildDescriptionField() {
@@ -573,7 +648,7 @@ class _UploadFileScreenState extends State<UploadFileScreen> {
           ),
         ],
       ),
-    ).animate().fadeIn(duration: 400.ms, delay: 200.ms).slideY(begin: 0.1, end: 0);
+    ).animate().fadeIn(duration: 400.ms, delay: 250.ms).slideY(begin: 0.1, end: 0);
   }
 
   Widget _buildUploadButton() {
@@ -584,7 +659,7 @@ class _UploadFileScreenState extends State<UploadFileScreen> {
       isLoading: _isUploading,
       onPressed: _canUpload ? _upload : null,
       width: double.infinity,
-    ).animate().fadeIn(duration: 400.ms, delay: 300.ms).slideY(begin: 0.1, end: 0);
+    ).animate().fadeIn(duration: 400.ms, delay: 350.ms).slideY(begin: 0.1, end: 0);
   }
 
   IconData _getCategoryIcon(String iconName) {
