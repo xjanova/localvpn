@@ -75,6 +75,9 @@ class VpnProxyService extends ChangeNotifier {
   /// Current server index for fallback retry within a country
   int _currentServerIndex = 0;
 
+  /// Total attempts made across all rounds (for cycle limit)
+  int _totalAttempts = 0;
+
   /// The country we're trying to connect to (for fallback retry)
   ProxyCountry? _connectingCountry;
 
@@ -346,7 +349,7 @@ class VpnProxyService extends ChangeNotifier {
       return ProxyCountry(
         countryCode: e.key,
         countryName: sorted.first.countryName,
-        servers: sorted.take(10).toList(),
+        servers: sorted.toList(),
         serverCount: sorted.length,
         bestSpeed: bestSpd,
       );
@@ -389,11 +392,20 @@ class VpnProxyService extends ChangeNotifier {
     return fields;
   }
 
+  /// Max rounds to cycle through all servers before giving up
+  static const int _maxRounds = 2;
+
   /// Info about current connection attempt (for UI display)
   String? get connectingServerInfo {
     final country = _connectingCountry;
     if (country == null || _status != VpnProxyStatus.connecting) return null;
-    return 'server ${_currentServerIndex + 1}/${country.servers.length}';
+    final round = (_totalAttempts ~/ country.servers.length) + 1;
+    final serverNum = _currentServerIndex + 1;
+    final total = country.servers.length;
+    if (round > 1) {
+      return 'server $serverNum/$total (รอบ $round)';
+    }
+    return 'server $serverNum/$total';
   }
 
   /// Connection timeout duration — if not connected within this time,
@@ -409,6 +421,7 @@ class VpnProxyService extends ChangeNotifier {
     }
     _connectingCountry = country;
     _currentServerIndex = 0;
+    _totalAttempts = 0;
     return _connectToServerAt(country, 0);
   }
 
@@ -425,6 +438,7 @@ class VpnProxyService extends ChangeNotifier {
         _status == VpnProxyStatus.connecting) {
       _connectingCountry = country;
       _currentServerIndex = 0;
+      _totalAttempts = 0;
       _pendingReconnect = country.servers.first;
       await disconnect();
       // _onStageChanged(disconnected) will pick up _pendingReconnect and call connect()
@@ -435,41 +449,48 @@ class VpnProxyService extends ChangeNotifier {
 
   /// Connect to server at given index within the country, with timeout fallback
   Future<bool> _connectToServerAt(ProxyCountry country, int index, {bool isRetry = false}) async {
-    if (index >= country.servers.length) {
+    _currentServerIndex = index % country.servers.length;
+    _totalAttempts++;
+
+    // Check if we've exhausted all rounds
+    final maxAttempts = country.servers.length * _maxRounds;
+    if (_totalAttempts > maxAttempts) {
       _status = VpnProxyStatus.error;
-      _error = 'ลอง ${country.servers.length} servers แล้ว ไม่สามารถเชื่อมต่อได้';
+      _error = 'ลอง ${country.servers.length} servers ครบ $_maxRounds รอบแล้ว ไม่สามารถเชื่อมต่อได้';
       _clearConnectionState();
       _connectingCountry = null;
       notifyListeners();
       return false;
     }
-    _currentServerIndex = index;
-    return connect(country.servers[index], isRetry: isRetry);
+
+    return connect(country.servers[_currentServerIndex], isRetry: isRetry);
   }
 
-  /// Try the next server in the current country (called on timeout)
+  /// Try the next server in the current country (called on timeout or error).
+  /// Wraps around to the first server when reaching the end — keeps cycling
+  /// until [_maxRounds] full rounds are exhausted.
   void _tryNextServer() {
     final country = _connectingCountry;
-    if (country == null) return;
+    if (country == null || country.servers.isEmpty) return;
 
-    final nextIndex = _currentServerIndex + 1;
-    if (nextIndex >= country.servers.length) {
-      // All servers tried
+    // Check if we've exhausted all rounds
+    final maxAttempts = country.servers.length * _maxRounds;
+    if (_totalAttempts >= maxAttempts) {
       _status = VpnProxyStatus.error;
-      _error = 'ลอง ${country.servers.length} servers แล้ว ไม่สามารถเชื่อมต่อได้';
+      _error = 'ลอง ${country.servers.length} servers ครบ $_maxRounds รอบแล้ว ไม่สามารถเชื่อมต่อได้';
       _clearConnectionState();
       _connectingCountry = null;
       notifyListeners();
-      // Force disconnect any pending OpenVPN attempt
       _openvpn.disconnect();
       return;
     }
 
-    debugPrint('VPN timeout — trying server ${nextIndex + 1}/${country.servers.length}');
+    final nextIndex = (_currentServerIndex + 1) % country.servers.length;
+    final round = (_totalAttempts ~/ country.servers.length) + 1;
+    debugPrint('VPN retry — server ${nextIndex + 1}/${country.servers.length} (รอบ $round)');
 
     // Disconnect current attempt, then connect to next server
     _openvpn.disconnect();
-    // Small delay for cleanup before trying next server
     Future.delayed(const Duration(milliseconds: 300), () {
       _connectToServerAt(country, nextIndex, isRetry: true);
     });
