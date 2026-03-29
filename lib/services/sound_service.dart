@@ -42,7 +42,18 @@ class SoundService {
     // Create a small pool of players for overlapping sounds
     for (var i = 0; i < 3; i++) {
       final p = AudioPlayer();
-      await p.setVolume(0.35);
+      // Set audio context for Android to allow playback alongside other audio
+      await p.setAudioContext(AudioContext(
+        android: AudioContextAndroid(
+          contentType: AndroidContentType.sonification,
+          usageType: AndroidUsageType.assistanceSonification,
+          audioFocus: AndroidAudioFocus.none,
+        ),
+        iOS: AudioContextIOS(
+          category: AVAudioSessionCategory.ambient,
+        ),
+      ));
+      await p.setVolume(0.6);
       await p.setPlayerMode(PlayerMode.lowLatency);
       _pool.add(p);
     }

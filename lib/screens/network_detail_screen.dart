@@ -71,8 +71,61 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
     await widget.networkService.getMembers(widget.network.slug);
   }
 
+  bool get _isCreator {
+    final createdBy = widget.network.createdBy;
+    final deviceId = widget.networkService.deviceId;
+    return createdBy != null && deviceId != null && createdBy == deviceId;
+  }
+
   Future<void> _leaveNetwork() async {
     SoundService().play(SfxType.notification);
+
+    // If creator and other members exist, warn them
+    final otherMembers = widget.networkService.members
+        .where((m) => m.machineId != widget.networkService.deviceId)
+        .length;
+
+    if (_isCreator && otherMembers > 0) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.surface,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(children: [
+            Icon(Icons.warning_amber_rounded, color: AppColors.warning, size: 24),
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text('คุณเป็นผู้สร้างเครือข่าย',
+                  style: TextStyle(color: AppColors.textPrimary, fontSize: 16)),
+            ),
+          ]),
+          content: Text(
+            'เครือข่าย "${widget.network.name}" ยังมีสมาชิกอยู่ $otherMembers คน\n\n'
+            'หากต้องการออก ให้ "ลบเครือข่าย" แทน ซึ่งจะเตะสมาชิกทุกคนออก\n\n'
+            'หรือรอให้สมาชิกทุกคนออกก่อนแล้วค่อยออก',
+            style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('เข้าใจแล้ว'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _deleteNetwork();
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+              child: const Text('ลบเครือข่าย', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+
+      if (confirmed != true) return;
+      return;
+    }
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -122,15 +175,17 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
     if (!mounted) return;
 
     if (success) {
+      SoundService().play(SfxType.success);
       Navigator.of(context).pop();
     } else {
       SoundService().play(SfxType.error);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            widget.networkService.error ?? 'ไม่สามารถออกจากเครือข่ายได้',
+            widget.networkService.error ?? 'ไม่สามารถออกจากเครือข่ายได้ กรุณาลองใหม่',
           ),
           backgroundColor: AppColors.error.withValues(alpha: 0.9),
+          duration: const Duration(seconds: 4),
         ),
       );
       widget.networkService.clearError();

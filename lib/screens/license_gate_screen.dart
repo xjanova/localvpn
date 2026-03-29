@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../services/license_service.dart';
@@ -88,6 +89,22 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
           _showError('ไม่สามารถเปิดเว็บเบราว์เซอร์ได้');
         }
       }
+    }
+  }
+
+  Future<void> _scanQrCode() async {
+    SoundService().play(SfxType.tap);
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => _QrScannerScreen(),
+      ),
+    );
+
+    if (result != null && result.isNotEmpty && mounted) {
+      SoundService().play(SfxType.coin);
+      _licenseController.text = result.trim();
+      // Auto-activate after scan
+      _activateLicense();
     }
   }
 
@@ -243,7 +260,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
           period: 'บาท/เดือน',
           plan: 'monthly',
           color: AppColors.primary,
-          features: 'สมาชิกสูงสุด 50 คน/ห้อง',
+          features: 'VPN ทุกประเทศ | 50 คน/ห้อง | Cloud Sync',
           index: 0,
         ),
         _buildPricingCard(
@@ -253,7 +270,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
           plan: 'yearly',
           color: AppColors.secondary,
           badge: 'ประหยัด 48%',
-          features: 'สมาชิกสูงสุด 50 คน/ห้อง',
+          features: 'VPN ทุกประเทศ | 50 คน/ห้อง | ซัพพอร์ตพรีเมียม',
           index: 1,
         ),
         _buildPricingCard(
@@ -261,9 +278,9 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
           price: '5,000',
           period: 'บาท (จ่ายครั้งเดียว)',
           plan: 'lifetime',
-          color: const Color(0xFFFFA726), // warm amber, more readable than yellow
+          color: const Color(0xFFFFA726),
           badge: 'คุ้มที่สุด',
-          features: 'สมาชิกสูงสุด 50 คน/ห้อง',
+          features: 'ทุกฟีเจอร์ | ไม่จำกัดอุปกรณ์ | อัพเดทตลอดชีพ',
           index: 2,
         ),
       ],
@@ -544,22 +561,47 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
               color: AppColors.textPrimary,
               fontFamily: 'monospace',
             ),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               hintText: 'XXXX-XXXX-XXXX-XXXX',
-              prefixIcon: Icon(Icons.key, color: AppColors.primary),
+              prefixIcon: const Icon(Icons.key, color: AppColors.primary),
               counterText: '',
+              suffixIcon: IconButton(
+                icon: const Icon(Icons.qr_code_scanner, color: AppColors.secondary),
+                tooltip: 'สแกน QR Code',
+                onPressed: _scanQrCode,
+              ),
             ),
             textInputAction: TextInputAction.done,
             onSubmitted: (_) => _activateLicense(),
           ),
           const SizedBox(height: 16),
-          SizedBox(
-            width: double.infinity,
-            child: NeonButton(
-              text: 'เปิดใช้งาน',
-              isLoading: _activating,
-              onPressed: _activating ? null : _activateLicense,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: NeonButton(
+                  text: 'เปิดใช้งาน',
+                  isLoading: _activating,
+                  onPressed: _activating ? null : _activateLicense,
+                ),
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                height: 48,
+                child: ElevatedButton(
+                  onPressed: _scanQrCode,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.secondary.withValues(alpha: 0.15),
+                    foregroundColor: AppColors.secondary,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: BorderSide(color: AppColors.secondary.withValues(alpha: 0.3)),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                  ),
+                  child: const Icon(Icons.qr_code_scanner, size: 22),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 12),
           Center(
@@ -619,5 +661,85 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
         ),
       ),
     ).animate().fadeIn(duration: 400.ms, delay: 900.ms);
+  }
+}
+
+/// Full-screen QR code scanner overlay
+class _QrScannerScreen extends StatefulWidget {
+  @override
+  State<_QrScannerScreen> createState() => _QrScannerScreenState();
+}
+
+class _QrScannerScreenState extends State<_QrScannerScreen> {
+  final MobileScannerController _controller = MobileScannerController(
+    detectionSpeed: DetectionSpeed.normal,
+    facing: CameraFacing.back,
+  );
+  bool _scanned = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: const Text('สแกน QR Code License'),
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ),
+      body: Stack(
+        children: [
+          MobileScanner(
+            controller: _controller,
+            onDetect: (capture) {
+              if (_scanned) return;
+              final barcode = capture.barcodes.firstOrNull;
+              if (barcode?.rawValue == null) return;
+
+              final value = barcode!.rawValue!.trim();
+              if (value.isEmpty) return;
+
+              _scanned = true;
+              HapticFeedback.heavyImpact();
+              Navigator.pop(context, value);
+            },
+          ),
+          // Viewfinder overlay
+          Center(
+            child: Container(
+              width: 250,
+              height: 250,
+              decoration: BoxDecoration(
+                border: Border.all(color: AppColors.primary, width: 2),
+                borderRadius: BorderRadius.circular(16),
+              ),
+            ),
+          ),
+          // Instruction text
+          Positioned(
+            bottom: 80,
+            left: 0,
+            right: 0,
+            child: const Text(
+              'วาง QR Code ของ License Key ในกรอบ',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white70,
+                fontSize: 14,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

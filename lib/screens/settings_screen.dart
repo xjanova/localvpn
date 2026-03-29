@@ -428,10 +428,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 Text(
                   _updateService.downloadProgress < 0
                       ? 'กำลังโหลด...'
-                      : '${(_updateService.downloadProgress * 100).toStringAsFixed(0)}%',
-                  style: const TextStyle(
+                      : 'กำลังดาวน์โหลด ${(_updateService.downloadProgress * 100).toStringAsFixed(0)}%',
+                  style: TextStyle(
                     fontSize: 12,
-                    color: AppColors.textMuted,
+                    fontWeight: FontWeight.w600,
+                    color: _updateService.downloadProgress >= 0.99
+                        ? AppColors.success
+                        : AppColors.primary,
                   ),
                 ),
               ],

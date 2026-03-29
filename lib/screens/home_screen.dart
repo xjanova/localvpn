@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/license_state.dart';
 import '../services/file_transfer_service.dart';
@@ -783,26 +784,29 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   Widget _buildLicenseInfo() {
     final license = widget.licenseService.state;
+    final isFree = license.status != LicenseStatus.active;
+    final bannerColor = isFree ? const Color(0xFFFFA726) : AppColors.success;
 
     return GlassCard(
+      onTap: isFree
+          ? () {
+              SoundService().play(SfxType.tap);
+              _openPurchaseUrl();
+            }
+          : null,
+      borderColor: bannerColor.withValues(alpha: 0.4),
       child: Row(
         children: [
           Container(
             width: 40,
             height: 40,
             decoration: BoxDecoration(
-              color: license.status == LicenseStatus.active
-                  ? AppColors.success.withValues(alpha: 0.1)
-                  : AppColors.warning.withValues(alpha: 0.1),
+              color: bannerColor.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(
-              license.status == LicenseStatus.active
-                  ? Icons.verified
-                  : Icons.timer,
-              color: license.status == LicenseStatus.active
-                  ? AppColors.success
-                  : AppColors.warning,
+              isFree ? Icons.workspace_premium : Icons.verified,
+              color: bannerColor,
               size: 20,
             ),
           ),
@@ -813,27 +817,39 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               children: [
                 Text(
                   'License: ${license.statusDisplayName}',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w600,
+                    color: bannerColor,
                   ),
                 ),
                 Text(
-                  license.status == LicenseStatus.trial
-                      ? 'เหลือ ${license.demoMinutesLeft ?? 0} นาที'
+                  isFree
+                      ? 'อัพเกรด Premium เพื่อปลดล็อคทุกฟีเจอร์'
                       : license.typeDisplayName,
                   style: const TextStyle(
                     fontSize: 11,
-                    color: AppColors.textMuted,
+                    color: AppColors.textSecondary,
                   ),
                 ),
               ],
             ),
           ),
+          if (isFree)
+            Icon(Icons.arrow_forward_ios, color: bannerColor, size: 14),
         ],
       ),
     ).animate().fadeIn(duration: 400.ms, delay: 500.ms);
+  }
+
+  void _openPurchaseUrl() async {
+    final url = widget.licenseService.getPurchaseUrl('monthly');
+    final uri = Uri.tryParse(url);
+    if (uri != null) {
+      try {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } catch (_) {}
+    }
   }
 
   Widget _buildDevicesTab() {

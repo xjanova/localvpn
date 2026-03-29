@@ -148,7 +148,7 @@ class VpnProxyService extends ChangeNotifier {
     return null;
   }
 
-  /// Fetch server list from backend
+  /// Fetch server list from backend, with client-side VPN Gate fallback
   Future<void> fetchServers() async {
     if (_deviceId == null) return;
 
@@ -187,18 +187,155 @@ class VpnProxyService extends ChangeNotifier {
                   .toList() ??
               [];
         } else {
-          _error = data['error'] as String? ?? 'Failed to fetch servers';
+          // Backend returned error (e.g. 503 VPN Gate blocked) — try client-side
+          await _fetchVpnGateDirect();
         }
       } else {
-        _error = 'Server error (${response.statusCode})';
+        // Server error — try client-side fallback
+        await _fetchVpnGateDirect();
       }
     } catch (e) {
-      _error = 'ไม่สามารถโหลดรายการ VPN servers ได้';
+      // Network error — try client-side fallback
       debugPrint('VpnProxyService.fetchServers error: $e');
+      await _fetchVpnGateDirect();
     }
 
     _isLoading = false;
     notifyListeners();
+  }
+
+  /// Direct client-side fetch from VPN Gate API as fallback
+  Future<void> _fetchVpnGateDirect() async {
+    debugPrint('Trying client-side VPN Gate fetch...');
+    const apis = [
+      'https://www.vpngate.net/api/iphone/',
+      'http://www.vpngate.net/api/iphone/',
+    ];
+
+    String? csv;
+    for (final apiUrl in apis) {
+      try {
+        final resp = await http.get(
+          Uri.parse(apiUrl),
+          headers: {'User-Agent': 'Mozilla/5.0'},
+        ).timeout(const Duration(seconds: 10));
+        if (resp.statusCode == 200 && resp.body.length > 100) {
+          csv = resp.body;
+          break;
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+
+    if (csv == null) {
+      _error = 'ไม่สามารถโหลดรายการ VPN servers ได้';
+      return;
+    }
+
+    // Parse VPN Gate CSV
+    final lines = csv.split('\n');
+    final servers = <ProxyServer>[];
+    bool headerSkipped = false;
+
+    // Free countries only for non-premium
+    const freeCountries = ['JP', 'US', 'KR'];
+
+    for (final line in lines) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty || trimmed.startsWith('*')) continue;
+      if (!headerSkipped) {
+        headerSkipped = true;
+        continue;
+      }
+
+      final fields = _parseCsvLine(trimmed);
+      if (fields.length < 15) continue;
+
+      final openvpnConfig = fields[14];
+      if (openvpnConfig.isEmpty) continue;
+
+      final speed = int.tryParse(fields[4]) ?? 0;
+      if (speed <= 0) continue;
+
+      final countryCode = (fields[6]).toUpperCase();
+
+      servers.add(ProxyServer(
+        hostname: fields[0],
+        ip: fields[1],
+        score: int.tryParse(fields[3]) ?? 0,
+        ping: int.tryParse(fields[3]) ?? 0,
+        speed: speed,
+        countryName: fields[5],
+        countryCode: countryCode,
+        sessions: int.tryParse(fields[7]) ?? 0,
+        uptime: int.tryParse(fields[8]) ?? 0,
+        openvpnConfig: openvpnConfig,
+      ));
+    }
+
+    if (servers.isEmpty) {
+      _error = 'ไม่พบ VPN servers';
+      return;
+    }
+
+    // Group by country
+    final grouped = <String, List<ProxyServer>>{};
+    final allCountryCodes = <String>{};
+
+    for (final s in servers) {
+      allCountryCodes.add(s.countryCode);
+      if (!_isPremium && !freeCountries.contains(s.countryCode)) continue;
+      grouped.putIfAbsent(s.countryCode, () => []).add(s);
+    }
+
+    // Sort each group by speed descending
+    _countries = grouped.entries.map((e) {
+      final sorted = e.value..sort((a, b) => b.speed.compareTo(a.speed));
+      return ProxyCountry(
+        countryCode: e.key,
+        countryName: sorted.first.countryName,
+        servers: sorted.take(5).toList(),
+        serverCount: sorted.length,
+        bestSpeed: sorted.first.speed,
+      );
+    }).toList()
+      ..sort((a, b) => b.bestSpeed.compareTo(a.bestSpeed));
+
+    // Locked countries
+    final unlockedCodes = grouped.keys.toSet();
+    _lockedCountries = allCountryCodes
+        .where((c) => !unlockedCodes.contains(c))
+        .map((c) {
+      final sample = servers.firstWhere((s) => s.countryCode == c);
+      return ProxyCountry(
+        countryCode: c,
+        countryName: sample.countryName,
+        locked: true,
+      );
+    }).toList();
+
+    _error = null;
+  }
+
+  /// Simple CSV line parser that handles quoted fields
+  List<String> _parseCsvLine(String line) {
+    final fields = <String>[];
+    bool inQuotes = false;
+    final current = StringBuffer();
+    for (var i = 0; i < line.length; i++) {
+      final ch = line[i];
+      if (ch == '"') {
+        inQuotes = !inQuotes;
+      } else if (ch == ',' && !inQuotes) {
+        fields.add(current.toString());
+        current.clear();
+      } else {
+        current.write(ch);
+      }
+    }
+    fields.add(current.toString());
+    return fields;
   }
 
   /// Connect to the best server in a country

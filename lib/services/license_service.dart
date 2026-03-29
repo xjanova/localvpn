@@ -13,7 +13,7 @@ import '../models/license_state.dart';
 class LicenseService extends ChangeNotifier {
   static const String _baseUrl =
       'https://xman4289.com/api/v1/product/localvpn';
-  static const String _purchaseBaseUrl = 'https://xman4289.com/localvpn/buy';
+  static const String _purchaseBaseUrl = 'https://xman4289.com/localvpn';
 
   static const String _prefLicenseKey = 'license_key_enc';
   static const String _prefLicenseType = 'license_type';
@@ -508,10 +508,8 @@ class LicenseService extends ChangeNotifier {
   }
 
   String getPurchaseUrl(String plan) {
-    final uri = Uri.parse(_purchaseBaseUrl).replace(
-      queryParameters: {'plan': plan},
-    );
-    return uri.toString();
+    // Go to product landing page with plan anchor for context
+    return '$_purchaseBaseUrl#$plan';
   }
 
   void clearError() {
