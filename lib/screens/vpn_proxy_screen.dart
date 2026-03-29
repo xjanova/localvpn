@@ -285,7 +285,7 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
             child: Text(
               _isPremium
                   ? 'PREMIUM - VPN ทุกประเทศ'
-                  : 'FREE - 3 ประเทศ (JP, US, KR)',
+                  : 'FREE - 10 ประเทศ',
               style: TextStyle(
                 color: _isPremium ? AppColors.primary : AppColors.textMuted,
                 fontSize: 11,

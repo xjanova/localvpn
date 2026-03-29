@@ -296,7 +296,7 @@ class VpnProxyService extends ChangeNotifier {
     bool headerSkipped = false;
 
     // Free countries only for non-premium
-    const freeCountries = ['JP', 'US', 'KR'];
+    const freeCountries = ['TH', 'JP', 'US', 'KR', 'SG', 'IN', 'GB', 'DE', 'AU', 'CA'];
 
     for (final line in lines) {
       final trimmed = line.trim();
