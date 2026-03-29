@@ -10,6 +10,11 @@
 -keep class com.xjanova.localvpn.LocalVpnService { *; }
 -keep class com.xjanova.localvpn.MainActivity { *; }
 
+# Keep OpenVPN Flutter plugin and OpenVPN native library
+-keep class id.laskarmedia.openvpn_flutter.** { *; }
+-keep class de.blinkt.openvpn.** { *; }
+-keep class de.blinkt.openvpn.core.** { *; }
+
 # Keep JSON models
 -keepattributes *Annotation*
 -keepattributes Signature

@@ -120,7 +120,7 @@ class VpnProxyService extends ChangeNotifier {
 
   void _onStageChanged(VPNStage stage, String raw) {
     _stage = stage;
-    debugPrint('VPN Proxy stage: $stage ($raw)');
+    debugPrint('VPN Proxy stage: $stage ($raw) [status=$_status, pendingReconnect=${_pendingReconnect != null}, connectingCountry=${_connectingCountry?.countryCode}]');
 
     // Don't override disconnecting state with connected (race condition)
     if (_status == VpnProxyStatus.disconnecting && stage == VPNStage.connected) {
@@ -414,7 +414,7 @@ class VpnProxyService extends ChangeNotifier {
 
   /// Connection timeout duration — if not connected within this time,
   /// try the next server in the country.
-  static const Duration _connectionTimeout = Duration(seconds: 30);
+  static const Duration _connectionTimeout = Duration(seconds: 15);
 
   /// Connect to the best server in a country (with auto-fallback to next server)
   Future<bool> connectToCountry(ProxyCountry country) async {
@@ -519,6 +519,11 @@ class VpnProxyService extends ChangeNotifier {
     try {
       // Decode base64 OpenVPN config (strip whitespace/newlines from base64)
       final cleanBase64 = server.openvpnConfig.replaceAll(RegExp(r'\s'), '');
+      if (cleanBase64.isEmpty) {
+        debugPrint('VPN config is empty for ${server.hostname}');
+        _tryNextServer();
+        return false;
+      }
       final configData = utf8.decode(base64Decode(cleanBase64));
 
       // Use filteredConfig to pick one random remote if config has multiple
@@ -532,19 +537,37 @@ class VpnProxyService extends ChangeNotifier {
         // Single remote or parse error — use original config
       }
 
-      // Ensure config ends with newline (plugin appends directives without \n)
-      final normalizedConfig = filteredData.endsWith('\n')
-          ? filteredData
-          : '$filteredData\n';
+      // Normalize line endings and ensure trailing newline
+      // (plugin appends directives without \n; \r\n can cause issues)
+      final normalizedConfig = filteredData
+          .replaceAll('\r\n', '\n')
+          .replaceAll('\r', '\n');
+      final finalConfig = normalizedConfig.endsWith('\n')
+          ? normalizedConfig
+          : '$normalizedConfig\n';
+
+      // Log config summary for debugging
+      final configLines = finalConfig.split('\n');
+      final remoteLine = configLines.firstWhere(
+        (l) => l.trim().toLowerCase().startsWith('remote '),
+        orElse: () => '(no remote found)',
+      );
+      final protoLine = configLines.firstWhere(
+        (l) => l.trim().toLowerCase().startsWith('proto '),
+        orElse: () => '(no proto)',
+      );
+      final hasCA = finalConfig.contains('<ca>');
+      final hasCert = finalConfig.contains('<cert>');
+      final hasKey = finalConfig.contains('<key>');
+      debugPrint('VPN connect: ${server.hostname} | $protoLine | $remoteLine | '
+          'ca=$hasCA cert=$hasCert key=$hasKey | ${configLines.length} lines');
 
       _openvpn.connect(
-        normalizedConfig,
+        finalConfig,
         server.hostname,
-        username: '',
-        password: '',
-        // VPN Gate configs already include <ca> certs but don't need client certs.
-        // Set true to prevent plugin from appending "client-cert-not-required"
-        // without a newline (which corrupts the config).
+        // Don't pass empty strings — pass null to avoid confusing
+        // the native OpenVPN layer with empty credentials.
+        // VPN Gate uses certificate auth, not user/password.
         certIsRequired: true,
       );
 

@@ -5,16 +5,24 @@ import android.content.Intent
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
+import android.util.Log
 import androidx.core.content.FileProvider
+import id.laskarmedia.openvpn_flutter.OpenVPNFlutterPlugin
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 
 class MainActivity : FlutterActivity() {
+    companion object {
+        private const val TAG = "MainActivity"
+    }
+
     private val VPN_CHANNEL = "com.xjanova.localvpn/vpn"
     private val INSTALL_CHANNEL = "com.xjanova.localvpn/installer"
     private val VPN_REQUEST_CODE = 100
+    // OpenVPN Flutter plugin uses request code 24 for VPN permission
+    private val OPENVPN_REQUEST_CODE = 24
 
     private var pendingResult: MethodChannel.Result? = null
     private var pendingVirtualIp: String? = null
@@ -84,6 +92,8 @@ class MainActivity : FlutterActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+
+        // Handle Local VPN (Virtual LAN) permission result
         if (requestCode == VPN_REQUEST_CODE) {
             if (resultCode == Activity.RESULT_OK) {
                 val ip = pendingVirtualIp
@@ -98,6 +108,16 @@ class MainActivity : FlutterActivity() {
                 pendingResult?.error("VPN_DENIED", "User denied VPN permission", null)
                 pendingResult = null
             }
+        }
+
+        // Handle OpenVPN plugin permission result.
+        // The openvpn_flutter plugin uses startActivityForResult with request code 24
+        // but does NOT implement ActivityResultListener, so the callback never fires.
+        // We must bridge it here by calling connectWhileGranted() ourselves.
+        if (requestCode == OPENVPN_REQUEST_CODE) {
+            val granted = resultCode == Activity.RESULT_OK
+            Log.d(TAG, "OpenVPN permission result: granted=$granted")
+            OpenVPNFlutterPlugin.connectWhileGranted(granted)
         }
     }
 
