@@ -492,6 +492,10 @@ class VpnProxyService extends ChangeNotifier {
     // Disconnect current attempt, then connect to next server
     _openvpn.disconnect();
     Future.delayed(const Duration(milliseconds: 300), () {
+      // Guard: don't retry if user disconnected or service disposed
+      if (_connectingCountry == null || _status == VpnProxyStatus.disconnected) {
+        return;
+      }
       _connectToServerAt(country, nextIndex, isRetry: true);
     });
   }
@@ -518,8 +522,15 @@ class VpnProxyService extends ChangeNotifier {
       final configData = utf8.decode(base64Decode(cleanBase64));
 
       // Use filteredConfig to pick one random remote if config has multiple
-      // remote lines (prevents ANR from plugin trying all remotes sequentially)
-      final filteredData = await OpenVPN.filteredConfig(configData) ?? configData;
+      // remote lines (prevents ANR from plugin trying all remotes sequentially).
+      // Wrapped in try-catch because the plugin's filteredConfig() crashes with
+      // Random().nextInt(0) when there's only 1 remote line.
+      String filteredData = configData;
+      try {
+        filteredData = await OpenVPN.filteredConfig(configData) ?? configData;
+      } catch (_) {
+        // Single remote or parse error — use original config
+      }
 
       // Ensure config ends with newline (plugin appends directives without \n)
       final normalizedConfig = filteredData.endsWith('\n')
@@ -562,7 +573,13 @@ class VpnProxyService extends ChangeNotifier {
   /// Disconnect from VPN
   Future<void> disconnect() async {
     _connectionTimer?.cancel();
-    _connectingCountry = null;
+    // Only clear _connectingCountry if there's no pending reconnect.
+    // switchToCountry() sets both _connectingCountry and _pendingReconnect
+    // before calling disconnect(), so we need to preserve the country
+    // for server cycling to work after reconnect.
+    if (_pendingReconnect == null) {
+      _connectingCountry = null;
+    }
     _status = VpnProxyStatus.disconnecting;
     notifyListeners();
 
@@ -656,6 +673,8 @@ class VpnProxyService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _connectionTimer?.cancel();
+    _connectionTimer = null;
     if (_status == VpnProxyStatus.connected ||
         _status == VpnProxyStatus.connecting) {
       _openvpn.disconnect();
