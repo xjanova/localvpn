@@ -155,7 +155,6 @@ class _SplashScreenState extends State<SplashScreen>
                             height: 100,
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(24),
-                              gradient: AppTheme.primaryGradient,
                               boxShadow: [
                                 BoxShadow(
                                   color: AppColors.primary
@@ -165,10 +164,12 @@ class _SplashScreenState extends State<SplashScreen>
                                 ),
                               ],
                             ),
-                            child: const Icon(
-                              Icons.vpn_lock,
-                              size: 48,
-                              color: Colors.white,
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(24),
+                              child: Image.asset(
+                                'assets/logo.webp',
+                                fit: BoxFit.cover,
+                              ),
                             ),
                           )
                               .animate(

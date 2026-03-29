@@ -223,12 +223,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
             ),
           ),
-          AnimatedSwitcher(
-          duration: const Duration(milliseconds: 250),
-          switchInCurve: Curves.easeOut,
-          switchOutCurve: Curves.easeIn,
-          child: IndexedStack(
-            key: ValueKey(_currentIndex),
+          IndexedStack(
             index: _currentIndex,
             children: [
               _buildHomeTab(),
@@ -252,7 +247,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
             ],
           ),
-        ),
         ],
       ),
       bottomNavigationBar: _buildBottomNav(),
@@ -349,12 +343,20 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           height: 44,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
-            gradient: AppTheme.primaryGradient,
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.primary.withValues(alpha: 0.2),
+                blurRadius: 8,
+                spreadRadius: 1,
+              ),
+            ],
           ),
-          child: const Icon(
-            Icons.vpn_lock,
-            color: Colors.white,
-            size: 22,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Image.asset(
+              'assets/logo.webp',
+              fit: BoxFit.cover,
+            ),
           ),
         )
             .animate(onPlay: (c) => c.repeat(reverse: true))
@@ -606,7 +608,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               text: 'ค้นหาเครือข่าย',
               icon: Icons.search,
               outlined: true,
-              onPressed: () => _onTabTapped(1),
+              onPressed: () => _onTabTapped(2),
             ),
           ],
         ),
@@ -722,7 +724,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 icon: Icons.add_circle_outline,
                 label: 'สร้างเครือข่าย',
                 color: AppColors.primary,
-                onTap: () => _onTabTapped(1),
+                onTap: () => _onTabTapped(2),
               ),
             ),
             const SizedBox(width: 12),
@@ -731,7 +733,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 icon: Icons.search,
                 label: 'ค้นหาเครือข่าย',
                 color: AppColors.secondary,
-                onTap: () => _onTabTapped(1),
+                onTap: () => _onTabTapped(2),
               ),
             ),
           ],
