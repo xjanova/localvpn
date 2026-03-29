@@ -273,7 +273,7 @@ class TorrentService extends ChangeNotifier {
       final response = await http
           .post(
             Uri.parse('$_baseUrl/torrent/seed'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
             body: jsonEncode(body),
           )
           .timeout(const Duration(seconds: 15));
@@ -327,7 +327,7 @@ class TorrentService extends ChangeNotifier {
       await http
           .post(
             Uri.parse('$_baseUrl/torrent/heartbeat'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
             body: jsonEncode(body),
           )
           .timeout(const Duration(seconds: 10));
@@ -372,7 +372,7 @@ class TorrentService extends ChangeNotifier {
       final response = await http
           .post(
             Uri.parse('$_baseUrl/torrent/upload'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
             body: jsonEncode(body),
           )
           .timeout(const Duration(seconds: 30));
@@ -438,7 +438,7 @@ class TorrentService extends ChangeNotifier {
       final response = await http
           .post(
             Uri.parse('$_baseUrl/torrent/profile'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
             body: jsonEncode({
               'machine_id': _machineId!,
               'license_key': _licenseKey!,
@@ -536,7 +536,7 @@ class TorrentService extends ChangeNotifier {
       final response = await http
           .post(
             Uri.parse('$_baseUrl/torrent/kyc/submit'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
             body: jsonEncode(body),
           )
           .timeout(const Duration(seconds: 30));
@@ -607,7 +607,7 @@ class TorrentService extends ChangeNotifier {
         // 1. Request chunks from seeder via relay
         await http.post(
           Uri.parse('$_baseUrl/torrent/relay/request'),
-          headers: {'Content-Type': 'application/json'},
+          headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
           body: jsonEncode({
             'machine_id': _machineId,
             'license_key': _licenseKey,
@@ -623,7 +623,7 @@ class TorrentService extends ChangeNotifier {
 
           final fetchResponse = await http.post(
             Uri.parse('$_baseUrl/torrent/relay/fetch'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
             body: jsonEncode({
               'machine_id': _machineId,
               'license_key': _licenseKey,
@@ -725,7 +725,7 @@ class TorrentService extends ChangeNotifier {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/torrent/relay/poll'),
-        headers: {'Content-Type': 'application/json'},
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
         body: jsonEncode({
           'machine_id': _machineId,
           'license_key': _licenseKey,
@@ -749,7 +749,7 @@ class TorrentService extends ChangeNotifier {
         // Upload chunk to server for relay
         await http.post(
           Uri.parse('$_baseUrl/torrent/relay/chunk'),
-          headers: {'Content-Type': 'application/json'},
+          headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
           body: jsonEncode({
             'machine_id': _machineId,
             'license_key': _licenseKey,

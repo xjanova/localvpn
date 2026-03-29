@@ -205,11 +205,25 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: AppTheme.backgroundGradient,
-        ),
-        child: AnimatedSwitcher(
+      body: Stack(
+        children: [
+          Container(
+            decoration: BoxDecoration(
+              gradient: AppTheme.backgroundGradient,
+            ),
+          ),
+          // Faint logo watermark
+          Center(
+            child: Opacity(
+              opacity: 0.03,
+              child: Image.asset(
+                'assets/logo.webp',
+                width: MediaQuery.of(context).size.width * 0.7,
+                fit: BoxFit.contain,
+              ),
+            ),
+          ),
+          AnimatedSwitcher(
           duration: const Duration(milliseconds: 250),
           switchInCurve: Curves.easeOut,
           switchOutCurve: Curves.easeIn,
@@ -239,6 +253,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ],
           ),
         ),
+        ],
       ),
       bottomNavigationBar: _buildBottomNav(),
     );

@@ -142,7 +142,10 @@ class LicenseService extends ChangeNotifier {
       final response = await http
           .post(
             Uri.parse('$_baseUrl/register-device'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
             body: jsonEncode({
               'machine_id': _deviceId,
               'platform': Platform.operatingSystem,
@@ -171,7 +174,10 @@ class LicenseService extends ChangeNotifier {
       final response = await http
           .post(
             Uri.parse('$_baseUrl/activate'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
             body: jsonEncode({
               'license_key': sanitized,
               'machine_id': _deviceId,
@@ -247,7 +253,10 @@ class LicenseService extends ChangeNotifier {
       final response = await http
           .post(
             Uri.parse('$_baseUrl/validate'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
             body: jsonEncode({
               'license_key': licenseKey,
               'machine_id': _deviceId,
@@ -334,7 +343,10 @@ class LicenseService extends ChangeNotifier {
       final response = await http
           .post(
             Uri.parse('$_baseUrl/check-machine'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
             body: jsonEncode({
               'machine_id': _deviceId,
             }),
@@ -390,7 +402,10 @@ class LicenseService extends ChangeNotifier {
       final response = await http
           .post(
             Uri.parse('$_baseUrl/demo'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
             body: jsonEncode({
               'machine_id': _deviceId,
               'platform': Platform.operatingSystem,
@@ -441,7 +456,10 @@ class LicenseService extends ChangeNotifier {
       final response = await http
           .post(
             Uri.parse('$_baseUrl/demo/check'),
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
             body: jsonEncode({
               'machine_id': _deviceId,
             }),

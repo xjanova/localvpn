@@ -90,6 +90,7 @@ class NetworkService extends ChangeNotifier {
   Map<String, String> get _headers {
     final h = <String, String>{
       'Content-Type': 'application/json',
+      'Accept': 'application/json',
     };
     if (_deviceId != null) {
       h['X-Device-Id'] = _deviceId!;

@@ -90,6 +90,17 @@ class _AnimatedBackgroundState extends State<AnimatedBackground>
             ),
           ),
         ),
+        // Faint logo watermark
+        Center(
+          child: Opacity(
+            opacity: 0.04,
+            child: Image.asset(
+              'assets/logo.webp',
+              width: MediaQuery.of(context).size.width * 0.7,
+              fit: BoxFit.contain,
+            ),
+          ),
+        ),
         widget.child,
       ],
     );

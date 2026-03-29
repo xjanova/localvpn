@@ -153,11 +153,10 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
     return Column(
       children: [
         Container(
-          width: 80,
-          height: 80,
+          width: 100,
+          height: 100,
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            gradient: AppTheme.primaryGradient,
+            borderRadius: BorderRadius.circular(24),
             boxShadow: [
               BoxShadow(
                 color: AppColors.primary.withValues(alpha: 0.3),
@@ -166,10 +165,12 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
               ),
             ],
           ),
-          child: const Icon(
-            Icons.vpn_lock,
-            size: 40,
-            color: Colors.white,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(24),
+            child: Image.asset(
+              'assets/logo.webp',
+              fit: BoxFit.cover,
+            ),
           ),
         )
             .animate()
@@ -260,7 +261,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
           price: '5,000',
           period: 'บาท (จ่ายครั้งเดียว)',
           plan: 'lifetime',
-          color: AppColors.warning,
+          color: const Color(0xFFFFA726), // warm amber, more readable than yellow
           badge: 'คุ้มที่สุด',
           features: 'สมาชิกสูงสุด 50 คน/ห้อง',
           index: 2,
@@ -339,7 +340,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
           Icon(
             icon,
             size: 14,
-            color: included ? AppColors.success : AppColors.warning,
+            color: included ? AppColors.success : const Color(0xFFFFA726),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -347,7 +348,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
               text,
               style: TextStyle(
                 fontSize: 12,
-                color: included ? AppColors.textSecondary : AppColors.warning,
+                color: included ? AppColors.textSecondary : const Color(0xFFFFA726),
               ),
             ),
           ),

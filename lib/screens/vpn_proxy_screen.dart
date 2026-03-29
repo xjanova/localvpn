@@ -110,7 +110,52 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
                   child: CircularProgressIndicator(color: AppColors.primary),
                 ),
               )
-            else ...[
+            else if (widget.vpnProxyService.countries.isEmpty &&
+                !_isConnected) ...[
+              // Empty state — no servers available
+              SliverFillRemaining(
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.cloud_off,
+                          size: 56, color: AppColors.textMuted),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'ไม่สามารถโหลดรายการ VPN ได้',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'เซิร์ฟเวอร์อาจไม่พร้อมใช้งานชั่วคราว\nกรุณาลองใหม่อีกครั้ง',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: AppColors.textMuted,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 20),
+                      ElevatedButton.icon(
+                        onPressed: () async {
+                          await widget.vpnProxyService.fetchServers();
+                          widget.vpnProxyService.pingAllCountries();
+                        },
+                        icon: const Icon(Icons.refresh, size: 18),
+                        label: const Text('ลองใหม่'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: AppColors.background,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ] else ...[
               _sliverPad(_buildSectionTitle('เลือกประเทศ'), top: 8),
               _buildCountryGrid(),
               if (widget.vpnProxyService.lockedCountries.isNotEmpty) ...[

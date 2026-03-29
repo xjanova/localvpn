@@ -164,7 +164,10 @@ class VpnProxyService extends ChangeNotifier {
         },
       );
 
-      final response = await http.get(uri).timeout(const Duration(seconds: 20));
+      final response = await http.get(
+        uri,
+        headers: {'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 20));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
