@@ -33,6 +33,9 @@ class VpnProxyService extends ChangeNotifier {
   String? _connectedCountry;
   String? get connectedCountry => _connectedCountry;
 
+  String? _connectedHostname;
+  String? get connectedHostname => _connectedHostname;
+
   Duration? _duration;
   Duration? get duration => _duration;
 
@@ -114,6 +117,7 @@ class VpnProxyService extends ChangeNotifier {
       case VPNStage.disconnected:
         _status = VpnProxyStatus.disconnected;
         _connectedCountry = null;
+        _connectedHostname = null;
         break;
       case VPNStage.error:
         _status = VpnProxyStatus.error;
@@ -212,6 +216,7 @@ class VpnProxyService extends ChangeNotifier {
     _status = VpnProxyStatus.connecting;
     _error = null;
     _connectedCountry = server.countryCode;
+    _connectedHostname = server.hostname;
     notifyListeners();
 
     try {
@@ -233,6 +238,7 @@ class VpnProxyService extends ChangeNotifier {
       _status = VpnProxyStatus.error;
       _error = 'ไม่สามารถเชื่อมต่อ VPN ได้: $e';
       _connectedCountry = null;
+      _connectedHostname = null;
       notifyListeners();
       return false;
     }
@@ -251,8 +257,28 @@ class VpnProxyService extends ChangeNotifier {
     if (_status != VpnProxyStatus.disconnected) {
       _status = VpnProxyStatus.disconnected;
       _connectedCountry = null;
+      _connectedHostname = null;
       notifyListeners();
     }
+  }
+
+  /// Find a server by hostname across all countries (for "follow gateway")
+  ProxyServer? findServerByHostname(String hostname) {
+    for (final country in _countries) {
+      for (final server in country.servers) {
+        if (server.hostname == hostname) return server;
+      }
+    }
+    return null;
+  }
+
+  /// Find a country by code
+  ProxyCountry? findCountryByCode(String code) {
+    final upper = code.toUpperCase();
+    for (final country in _countries) {
+      if (country.countryCode.toUpperCase() == upper) return country;
+    }
+    return null;
   }
 
   /// Ping a server to measure latency

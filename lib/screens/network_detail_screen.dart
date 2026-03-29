@@ -6,6 +6,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../models/network.dart';
 import '../services/network_service.dart';
 import '../services/sound_service.dart';
+import '../services/vpn_proxy_service.dart';
 import '../services/vpn_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass_card.dart';
@@ -16,12 +17,14 @@ class NetworkDetailScreen extends StatefulWidget {
   final NetworkService networkService;
   final VpnNetwork network;
   final VpnService? vpnService;
+  final VpnProxyService? vpnProxyService;
 
   const NetworkDetailScreen({
     super.key,
     required this.networkService,
     required this.network,
     this.vpnService,
+    this.vpnProxyService,
   });
 
   @override
@@ -226,6 +229,10 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         _buildNetworkInfo(network),
+                        if (_hasGateway) ...[
+                          const SizedBox(height: 12),
+                          _buildGatewayBanner(),
+                        ],
                         const SizedBox(height: 20),
                         _buildMembersHeader(members.length),
                         const SizedBox(height: 12),
@@ -519,6 +526,166 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  bool get _hasGateway => widget.networkService.hasVpnGateway;
+
+  Widget _buildGatewayBanner() {
+    final gateway = widget.networkService.vpnGatewayMember;
+    if (gateway == null) return const SizedBox.shrink();
+
+    final isSelf = widget.networkService.isSelfGateway &&
+        gateway.machineId == widget.networkService.deviceId;
+
+    return GlassCard(
+      borderColor: AppColors.primary.withValues(alpha: 0.4),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  AppColors.primary.withValues(alpha: 0.2),
+                  AppColors.secondary.withValues(alpha: 0.2),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Center(
+              child: Text(
+                gateway.vpnGatewayFlag,
+                style: const TextStyle(fontSize: 20),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isSelf ? 'คุณเป็น VPN Gateway' : 'VPN Gateway',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.primary,
+                  ),
+                ),
+                Text(
+                  isSelf
+                      ? 'สมาชิกสามารถเชื่อมต่อ VPN ตามคุณได้'
+                      : '${gateway.displayName} · ${gateway.vpnGatewayCountry?.toUpperCase() ?? ''}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textMuted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (!isSelf && widget.vpnProxyService != null)
+            SizedBox(
+              height: 32,
+              child: ElevatedButton.icon(
+                onPressed: _followGateway,
+                icon: const Icon(Icons.vpn_key, size: 14),
+                label: const Text(
+                  'Follow',
+                  style: TextStyle(fontSize: 12),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.1, end: 0);
+  }
+
+  Future<void> _followGateway() async {
+    final proxy = widget.vpnProxyService;
+    if (proxy == null) return;
+
+    final gateway = widget.networkService.vpnGatewayMember;
+    if (gateway == null || !gateway.isVpnGateway) return;
+
+    // Warn about LAN pause
+    SoundService().play(SfxType.notification);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: const Text(
+          'เชื่อมต่อ VPN Gateway',
+          style: TextStyle(color: AppColors.textPrimary),
+        ),
+        content: Text(
+          'เชื่อมต่อ VPN ไปยัง ${gateway.vpnGatewayCountry?.toUpperCase() ?? ''} '
+          'ตาม ${gateway.displayName}\n\n'
+          'Android อนุญาต VPN ได้ครั้งละ 1 tunnel เท่านั้น '
+          'การเชื่อมต่อ LAN จะถูกหยุดชั่วคราว',
+          style: const TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('ยกเลิก'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+            ),
+            child: const Text(
+              'เชื่อมต่อ',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    // Ensure server list is loaded
+    if (proxy.countries.isEmpty) {
+      await proxy.fetchServers();
+    }
+
+    // Try to find same server by hostname
+    if (gateway.vpnGatewayHostname != null) {
+      final server = proxy.findServerByHostname(gateway.vpnGatewayHostname!);
+      if (server != null) {
+        await proxy.connect(server);
+        return;
+      }
+    }
+
+    // Fallback: connect to same country
+    if (gateway.vpnGatewayCountry != null) {
+      final country = proxy.findCountryByCode(gateway.vpnGatewayCountry!);
+      if (country != null) {
+        await proxy.connectToCountry(country);
+        return;
+      }
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('ไม่พบ VPN server สำหรับ gateway นี้'),
+        backgroundColor: Colors.orange,
       ),
     );
   }

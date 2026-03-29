@@ -5,6 +5,7 @@ class NetworkMember {
   final String? publicIp;
   final int? publicPort;
   final String? vpnGatewayCountry;
+  final String? vpnGatewayHostname;
   final bool isOnline;
   final DateTime? lastHeartbeat;
   final String? machineId;
@@ -16,6 +17,7 @@ class NetworkMember {
     this.publicIp,
     this.publicPort,
     this.vpnGatewayCountry,
+    this.vpnGatewayHostname,
     this.isOnline = false,
     this.lastHeartbeat,
     this.machineId,
@@ -41,6 +43,7 @@ class NetworkMember {
       publicIp: json['public_ip'] as String?,
       publicPort: json['public_port'] as int?,
       vpnGatewayCountry: json['vpn_gateway_country'] as String?,
+      vpnGatewayHostname: json['vpn_gateway_hostname'] as String?,
       isOnline: json['is_online'] as bool? ?? false,
       lastHeartbeat: json['last_heartbeat'] != null
           ? DateTime.tryParse(json['last_heartbeat'] as String)
@@ -59,6 +62,7 @@ class NetworkMember {
       if (publicIp != null) 'public_ip': publicIp,
       if (publicPort != null) 'public_port': publicPort,
       if (vpnGatewayCountry != null) 'vpn_gateway_country': vpnGatewayCountry,
+      if (vpnGatewayHostname != null) 'vpn_gateway_hostname': vpnGatewayHostname,
       'is_online': isOnline,
       if (lastHeartbeat != null)
         'last_heartbeat': lastHeartbeat!.toIso8601String(),

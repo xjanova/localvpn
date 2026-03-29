@@ -155,7 +155,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void _onVpnProxyChanged() {
     // Sync VPN gateway status to network service for heartbeat broadcasting
     if (_vpnProxyService.status == VpnProxyStatus.connected) {
-      _networkService.setVpnGateway(_vpnProxyService.connectedCountry);
+      _networkService.setVpnGateway(
+        _vpnProxyService.connectedCountry,
+        hostname: _vpnProxyService.connectedHostname,
+      );
     } else {
       _networkService.setVpnGateway(null);
     }
@@ -603,6 +606,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               networkService: _networkService,
               network: network,
               vpnService: _vpnService,
+              vpnProxyService: _vpnProxyService,
             ),
           ),
         );

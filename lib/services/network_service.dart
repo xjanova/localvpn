@@ -15,6 +15,7 @@ class NetworkService extends ChangeNotifier {
   final DatabaseHelper _db = DatabaseHelper();
   P2pService? _p2pService;
   String? _vpnGatewayCountry;
+  String? _vpnGatewayHostname;
 
   List<VpnNetwork> _publicNetworks = [];
   List<VpnNetwork> get publicNetworks => _publicNetworks;
@@ -60,14 +61,31 @@ class NetworkService extends ChangeNotifier {
   /// Get the attached P2P service
   P2pService? get p2pService => _p2pService;
 
-  /// Set VPN gateway country (called by VpnProxyService when connected)
-  void setVpnGateway(String? countryCode) {
+  /// Get the device ID
+  String? get deviceId => _deviceId;
+
+  /// Set VPN gateway country + hostname (called by VpnProxyService when connected)
+  void setVpnGateway(String? countryCode, {String? hostname}) {
     _vpnGatewayCountry = countryCode;
+    _vpnGatewayHostname = hostname;
   }
 
-  /// Get the current VPN gateway member in the network (if any)
-  NetworkMember? get vpnGatewayMember =>
-      _members.where((m) => m.isVpnGateway).firstOrNull;
+  /// Whether THIS device is acting as a VPN gateway
+  bool get isSelfGateway =>
+      _vpnGatewayCountry != null && _vpnGatewayCountry!.isNotEmpty;
+
+  /// Whether any online member (including self) is a VPN gateway
+  bool get hasVpnGateway =>
+      _members.any((m) => m.isVpnGateway);
+
+  /// Get the current VPN gateway member in the network (if any, excluding self)
+  NetworkMember? get vpnGatewayMember {
+    for (final m in _members) {
+      if (m.isVpnGateway && m.machineId != _deviceId) return m;
+    }
+    // If no other member is gateway, return self if gateway
+    return _members.where((m) => m.isVpnGateway).firstOrNull;
+  }
 
   Map<String, String> get _headers {
     final h = <String, String>{
@@ -486,6 +504,9 @@ class NetworkService extends ChangeNotifier {
       // VPN gateway info — tells other members this host is routing via VPN
       if (_vpnGatewayCountry != null) {
         body['vpn_gateway_country'] = _vpnGatewayCountry;
+        if (_vpnGatewayHostname != null) {
+          body['vpn_gateway_hostname'] = _vpnGatewayHostname;
+        }
       }
 
       final response = await http

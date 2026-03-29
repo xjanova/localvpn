@@ -75,6 +75,38 @@ class MemberTile extends StatelessWidget {
                       fontFamily: 'monospace',
                     ),
                   ),
+                if (member.isVpnGateway)
+                  Container(
+                    margin: const EdgeInsets.only(top: 4),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: AppColors.primary.withValues(alpha: 0.3),
+                        width: 0.5,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          member.vpnGatewayFlag,
+                          style: const TextStyle(fontSize: 10),
+                        ),
+                        const SizedBox(width: 3),
+                        Text(
+                          'VPN Gateway',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
               ],
             ),
           ),
