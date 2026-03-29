@@ -429,8 +429,9 @@ class VpnProxyService extends ChangeNotifier {
     return _connectToServerAt(country, 0);
   }
 
-  /// Switch to a different country — disconnects first, then auto-reconnects
-  /// via the _pendingReconnect mechanism (race-condition safe).
+  /// Switch to a different country — disconnects fully, then connects.
+  /// Uses sequential disconnect→connect instead of _pendingReconnect
+  /// to avoid race conditions with user-initiated disconnect.
   Future<void> switchToCountry(ProxyCountry country) async {
     if (country.servers.isEmpty) {
       _error = 'ไม่มี server สำหรับประเทศนี้';
@@ -440,15 +441,9 @@ class VpnProxyService extends ChangeNotifier {
 
     if (_status == VpnProxyStatus.connected ||
         _status == VpnProxyStatus.connecting) {
-      _connectingCountry = country;
-      _currentServerIndex = 0;
-      _totalAttempts = 0;
-      _pendingReconnect = country.servers.first;
       await disconnect();
-      // _onStageChanged(disconnected) will pick up _pendingReconnect and call connect()
-    } else {
-      await connectToCountry(country);
     }
+    await connectToCountry(country);
   }
 
   /// Connect to server at given index within the country, with timeout fallback
@@ -575,16 +570,14 @@ class VpnProxyService extends ChangeNotifier {
     }
   }
 
-  /// Disconnect from VPN
+  /// Disconnect from VPN — clears all pending state.
+  /// Safe to call from user-initiated disconnect (power button).
+  /// Auto-retry uses _pendingReconnect which is preserved inside
+  /// _tryNextServer → _onStageChanged, not across disconnect() calls.
   Future<void> disconnect() async {
     _connectionTimer?.cancel();
-    // Only clear _connectingCountry if there's no pending reconnect.
-    // switchToCountry() sets both _connectingCountry and _pendingReconnect
-    // before calling disconnect(), so we need to preserve the country
-    // for server cycling to work after reconnect.
-    if (_pendingReconnect == null) {
-      _connectingCountry = null;
-    }
+    _pendingReconnect = null;
+    _connectingCountry = null;
     _status = VpnProxyStatus.disconnecting;
     notifyListeners();
 
@@ -593,9 +586,7 @@ class VpnProxyService extends ChangeNotifier {
     // Wait briefly for the stage callback
     await Future.delayed(const Duration(milliseconds: 500));
 
-    // If _pendingReconnect is set, _onStageChanged will handle the transition.
-    // Only force-clear if we're still stuck in disconnecting state.
-    if (_status == VpnProxyStatus.disconnecting && _pendingReconnect == null) {
+    if (_status == VpnProxyStatus.disconnecting) {
       _status = VpnProxyStatus.disconnected;
       _clearConnectionState();
       notifyListeners();
