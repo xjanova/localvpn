@@ -136,13 +136,17 @@ class VpnProxyService extends ChangeNotifier {
         break;
       case VPNStage.disconnected:
         _connectionTimer?.cancel();
-        // If a reconnect is pending (server switch), auto-connect instead of
-        // clearing state. This prevents the race where the old disconnected
-        // callback fires after connect() has already set new country/hostname.
+        // If a reconnect is pending (server switch or auto-retry), auto-connect
+        // instead of clearing state. This prevents the race where disconnect's
+        // callback fires before the retry/switch can start.
         if (_pendingReconnect != null) {
           final server = _pendingReconnect!;
           _pendingReconnect = null;
-          connect(server);
+          // If this is an auto-retry (same country), count the attempt
+          if (_connectingCountry != null) {
+            _totalAttempts++;
+          }
+          connect(server, isRetry: true);
           return; // don't clear state or notify — connect() handles it
         }
         _status = VpnProxyStatus.disconnected;
@@ -469,6 +473,9 @@ class VpnProxyService extends ChangeNotifier {
   /// Try the next server in the current country (called on timeout or error).
   /// Wraps around to the first server when reaching the end — keeps cycling
   /// until [_maxRounds] full rounds are exhausted.
+  ///
+  /// Uses [_pendingReconnect] to survive _onStageChanged(disconnected) clearing
+  /// state when _openvpn.disconnect() fires the callback.
   void _tryNextServer() {
     final country = _connectingCountry;
     if (country == null || country.servers.isEmpty) return;
@@ -486,18 +493,16 @@ class VpnProxyService extends ChangeNotifier {
     }
 
     final nextIndex = (_currentServerIndex + 1) % country.servers.length;
+    _currentServerIndex = nextIndex;
     final round = (_totalAttempts ~/ country.servers.length) + 1;
     debugPrint('VPN retry — server ${nextIndex + 1}/${country.servers.length} (รอบ $round)');
 
-    // Disconnect current attempt, then connect to next server
+    // Use _pendingReconnect so that _onStageChanged(disconnected) auto-connects
+    // instead of clearing state. This avoids the race where disconnect's callback
+    // fires before our retry can start.
+    _pendingReconnect = country.servers[nextIndex];
     _openvpn.disconnect();
-    Future.delayed(const Duration(milliseconds: 300), () {
-      // Guard: don't retry if user disconnected or service disposed
-      if (_connectingCountry == null || _status == VpnProxyStatus.disconnected) {
-        return;
-      }
-      _connectToServerAt(country, nextIndex, isRetry: true);
-    });
+    // _onStageChanged(disconnected) will pick up _pendingReconnect → connect()
   }
 
   /// Connect to a specific server.
@@ -653,15 +658,22 @@ class VpnProxyService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Continuously ping connected server
+  /// Continuously ping the actually connected server (found by hostname)
   Future<void> pingConnected() async {
-    if (_connectedCountry == null) return;
-    final country = _countries
-        .where((c) => c.countryCode == _connectedCountry)
-        .firstOrNull;
-    if (country?.bestServer == null) return;
+    if (_connectedHostname == null || _connectedCountry == null) return;
 
-    final ms = await pingServer(country!.bestServer!);
+    // Find the actual connected server by hostname, not just bestServer
+    ProxyServer? server = findServerByHostname(_connectedHostname!);
+    if (server == null) {
+      // Fallback to bestServer if hostname not found
+      final country = _countries
+          .where((c) => c.countryCode == _connectedCountry)
+          .firstOrNull;
+      server = country?.bestServer;
+    }
+    if (server == null) return;
+
+    final ms = await pingServer(server);
     _currentPing = ms;
     notifyListeners();
   }
