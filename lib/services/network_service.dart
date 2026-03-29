@@ -155,9 +155,10 @@ class NetworkService extends ChangeNotifier {
         body['description'] = description.trim();
       }
 
+      String? passwordHash;
       if (password != null && password.isNotEmpty) {
-        final hash = sha256.convert(utf8.encode(password));
-        body['password'] = hash.toString();
+        passwordHash = sha256.convert(utf8.encode(password)).toString();
+        body['password'] = passwordHash;
       }
 
       if (maxMembers != null) {
@@ -185,10 +186,6 @@ class NetworkService extends ChangeNotifier {
           _ownVirtualIp = memberData['virtual_ip'] as String?;
         }
 
-        String? passwordHash;
-        if (password != null && password.isNotEmpty) {
-          passwordHash = sha256.convert(utf8.encode(password)).toString();
-        }
         await _db.saveNetwork(
           slug: network.slug,
           name: network.name,
@@ -227,9 +224,10 @@ class NetworkService extends ChangeNotifier {
         'license_key': _licenseKey ?? '',
       };
 
+      String? passwordHash;
       if (password != null && password.isNotEmpty) {
-        final hash = sha256.convert(utf8.encode(password));
-        body['password'] = hash.toString();
+        passwordHash = sha256.convert(utf8.encode(password)).toString();
+        body['password'] = passwordHash;
       }
 
       final response = await http
@@ -253,10 +251,6 @@ class NetworkService extends ChangeNotifier {
           _ownVirtualIp = memberData['virtual_ip'] as String?;
         }
 
-        String? passwordHash;
-        if (password != null && password.isNotEmpty) {
-          passwordHash = sha256.convert(utf8.encode(password)).toString();
-        }
         await _db.saveNetwork(
           slug: network.slug,
           name: network.name,

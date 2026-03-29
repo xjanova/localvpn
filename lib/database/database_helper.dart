@@ -172,7 +172,7 @@ class DatabaseHelper {
       where: 'key = ?',
       whereArgs: [key],
     );
-    return results.isNotEmpty ? results.first['value'] as String : null;
+    return results.isNotEmpty ? results.first['value'] as String? : null;
   }
 
   Future<int> deleteSetting(String key) async {

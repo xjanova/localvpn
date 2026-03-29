@@ -114,6 +114,7 @@ class P2pService extends ChangeNotifier {
 
   Map<String, String> get _headers => {
         'Content-Type': 'application/json',
+        'Accept': 'application/json',
         if (_deviceId case final id?) 'X-Device-Id': id,
       };
 
