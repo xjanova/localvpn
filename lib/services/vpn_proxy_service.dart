@@ -135,11 +135,11 @@ class VpnProxyService extends ChangeNotifier {
         _error = null;
         break;
       case VPNStage.disconnected:
-        _connectionTimer?.cancel();
         // If a reconnect is pending (server switch or auto-retry), auto-connect
         // instead of clearing state. This prevents the race where disconnect's
         // callback fires before the retry/switch can start.
         if (_pendingReconnect != null) {
+          _connectionTimer?.cancel();
           final server = _pendingReconnect!;
           _pendingReconnect = null;
           // If this is an auto-retry (same country), count the attempt
@@ -149,6 +149,14 @@ class VpnProxyService extends ChangeNotifier {
           connect(server, isRetry: true);
           return; // don't clear state or notify — connect() handles it
         }
+        // Ignore stale disconnect callbacks from old connections — when
+        // switchToCountry() calls disconnect() then connectToCountry(),
+        // the old connection's delayed callback must not kill the new one.
+        if (_status == VpnProxyStatus.connecting) {
+          debugPrint('VPN ignoring stale disconnect callback (already connecting)');
+          break;
+        }
+        _connectionTimer?.cancel();
         _status = VpnProxyStatus.disconnected;
         _clearConnectionState();
         _connectingCountry = null;
@@ -497,7 +505,21 @@ class VpnProxyService extends ChangeNotifier {
     // fires before our retry can start.
     _pendingReconnect = country.servers[nextIndex];
     _openvpn.disconnect();
-    // _onStageChanged(disconnected) will pick up _pendingReconnect → connect()
+
+    // Safety: if the disconnect callback doesn't fire (e.g., OpenVPN plugin
+    // deduplicates consecutive "disconnected" stages), _pendingReconnect would
+    // never be consumed. Use a safety timer to force the reconnect.
+    _connectionTimer = Timer(const Duration(seconds: 2), () {
+      if (_pendingReconnect != null) {
+        debugPrint('VPN safety timer — disconnect callback did not fire, connecting directly');
+        final server = _pendingReconnect!;
+        _pendingReconnect = null;
+        if (_connectingCountry != null) {
+          _totalAttempts++;
+        }
+        connect(server, isRetry: true);
+      }
+    });
   }
 
   /// Connect to a specific server.

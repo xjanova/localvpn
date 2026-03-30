@@ -117,7 +117,17 @@ class MainActivity : FlutterActivity() {
         if (requestCode == OPENVPN_REQUEST_CODE) {
             val granted = resultCode == Activity.RESULT_OK
             Log.d(TAG, "OpenVPN permission result: granted=$granted")
-            OpenVPNFlutterPlugin.connectWhileGranted(granted)
+            if (granted) {
+                OpenVPNFlutterPlugin.connectWhileGranted(true)
+            } else {
+                // Plugin's connectWhileGranted(false) does nothing — no stage callback
+                // fires, so Flutter stays stuck in "connecting" forever. Send a "denied"
+                // stage event through the plugin's own event channel.
+                val plugin = flutterEngine?.plugins?.get(OpenVPNFlutterPlugin::class.java)
+                if (plugin is OpenVPNFlutterPlugin) {
+                    plugin.updateStage("denied")
+                }
+            }
         }
     }
 
