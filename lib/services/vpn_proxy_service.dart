@@ -561,9 +561,18 @@ class VpnProxyService extends ChangeNotifier {
 
       // Normalize line endings and ensure trailing newline
       // (plugin appends directives without \n; \r\n can cause issues)
-      final normalizedConfig = filteredData
+      var normalizedConfig = filteredData
           .replaceAll('\r\n', '\n')
           .replaceAll('\r', '\n');
+
+      // VPN Gate configs have '#auth-user-pass' (commented out). Uncomment it
+      // so the native OpenVPN library knows to use password authentication.
+      // We provide username/password 'vpn'/'vpn' via the connect() call.
+      normalizedConfig = normalizedConfig.replaceAll(
+        RegExp(r'^#\s*auth-user-pass\s*$', multiLine: true),
+        'auth-user-pass',
+      );
+
       final finalConfig = normalizedConfig.endsWith('\n')
           ? normalizedConfig
           : '$normalizedConfig\n';
@@ -584,12 +593,17 @@ class VpnProxyService extends ChangeNotifier {
       debugPrint('VPN connect: ${server.hostname} | $protoLine | $remoteLine | '
           'ca=$hasCA cert=$hasCert key=$hasKey | ${configLines.length} lines');
 
+      // VPN Gate standard credentials — required by the native OpenVPN layer.
+      // VPN Gate accepts username/password 'vpn'/'vpn' for all servers.
+      // Passing null causes NPE in the native VPNHelper/OpenVpnApi chain
+      // because Java static fields get overwritten from "" to null.
+      // certIsRequired: true → don't append 'client-cert-not-required'
+      // (it's a server-side directive that can cause parser errors on client)
       _openvpn.connect(
         finalConfig,
         server.hostname,
-        // Don't pass empty strings — pass null to avoid confusing
-        // the native OpenVPN layer with empty credentials.
-        // VPN Gate uses certificate auth, not user/password.
+        username: 'vpn',
+        password: 'vpn',
         certIsRequired: true,
       );
 
