@@ -1,99 +1,103 @@
-/// A VPN proxy server from VPN Gate
-class ProxyServer {
-  final String hostname;
-  final String ip;
-  final int score;
-  final int ping;
-  final int speed;
-  final String countryName;
+/// A WireGuard VPN server from the backend
+class WireguardServer {
+  final int id;
+  final String name;
   final String countryCode;
-  final int sessions;
-  final int uptime;
-  final String openvpnConfig; // Base64-encoded OpenVPN config
+  final String countryName;
+  final String endpoint;
+  final int load; // 0-100 percentage
+  final bool isHealthy;
 
-  ProxyServer({
-    required this.hostname,
-    required this.ip,
-    required this.score,
-    required this.ping,
-    required this.speed,
-    required this.countryName,
+  WireguardServer({
+    required this.id,
+    required this.name,
     required this.countryCode,
-    required this.sessions,
-    required this.uptime,
-    required this.openvpnConfig,
+    required this.countryName,
+    required this.endpoint,
+    required this.load,
+    required this.isHealthy,
   });
 
-  factory ProxyServer.fromJson(Map<String, dynamic> json) => ProxyServer(
-        hostname: json['hostname'] as String? ?? '',
-        ip: json['ip'] as String? ?? '',
-        score: json['score'] as int? ?? 0,
-        ping: json['ping'] as int? ?? 0,
-        speed: json['speed'] as int? ?? 0,
-        countryName: json['country_name'] as String? ?? '',
+  factory WireguardServer.fromJson(Map<String, dynamic> json) => WireguardServer(
+        id: json['id'] as int? ?? 0,
+        name: json['name'] as String? ?? '',
         countryCode: json['country_code'] as String? ?? '',
-        sessions: json['sessions'] as int? ?? 0,
-        uptime: json['uptime'] as int? ?? 0,
-        openvpnConfig: json['openvpn_config'] as String? ?? '',
+        countryName: json['country_name'] as String? ?? '',
+        endpoint: json['endpoint'] as String? ?? '',
+        load: json['load'] as int? ?? 0,
+        isHealthy: json['is_healthy'] as bool? ?? true,
       );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'country_code': countryCode,
+        'country_name': countryName,
+        'endpoint': endpoint,
+        'load': load,
+        'is_healthy': isHealthy,
+      };
 
   /// Measured latency (set by client after ping test)
   int? measuredPing;
 
-  /// Speed in Mbps (API returns bytes/s)
-  double get speedMbps => speed / 1000000;
-
-  String get speedLabel {
-    if (speedMbps >= 100) return '${speedMbps.toStringAsFixed(0)} Mbps';
-    if (speedMbps >= 1) return '${speedMbps.toStringAsFixed(1)} Mbps';
-    return '${(speed / 1000).toStringAsFixed(0)} Kbps';
+  /// Load label for display
+  String get loadLabel {
+    if (load < 30) return 'Low';
+    if (load < 70) return 'Medium';
+    return 'High';
   }
 }
 
-/// A country group of VPN servers
-class ProxyCountry {
+/// A country group of WireGuard servers
+class ServerCountry {
   final String countryCode;
   final String countryName;
-  final List<ProxyServer> servers;
-  final int serverCount;
-  final int bestSpeed;
+  final List<WireguardServer> servers;
   final bool locked;
 
-  const ProxyCountry({
+  const ServerCountry({
     required this.countryCode,
     required this.countryName,
     this.servers = const [],
-    this.serverCount = 0,
-    this.bestSpeed = 0,
     this.locked = false,
   });
 
-  factory ProxyCountry.fromJson(Map<String, dynamic> json) {
+  factory ServerCountry.fromJson(Map<String, dynamic> json) {
     final serverList = (json['servers'] as List<dynamic>?)
-            ?.map((s) => ProxyServer.fromJson(s as Map<String, dynamic>))
+            ?.map((s) => WireguardServer.fromJson(s as Map<String, dynamic>))
             .toList() ??
         [];
 
-    return ProxyCountry(
+    return ServerCountry(
       countryCode: json['country_code'] as String? ?? '',
       countryName: json['country_name'] as String? ?? '',
       servers: serverList,
-      serverCount: json['server_count'] as int? ?? serverList.length,
-      bestSpeed: json['best_speed'] as int? ?? 0,
       locked: json['locked'] as bool? ?? false,
     );
   }
 
-  /// Best server by score
-  ProxyServer? get bestServer =>
-      servers.isNotEmpty ? servers.first : null; // Already sorted by score
+  Map<String, dynamic> toJson() => {
+        'country_code': countryCode,
+        'country_name': countryName,
+        'servers': servers.map((s) => s.toJson()).toList(),
+        'locked': locked,
+      };
 
-  String get bestSpeedLabel {
-    final mbps = bestSpeed / 1000000;
-    if (mbps >= 100) return '${mbps.toStringAsFixed(0)} Mbps';
-    if (mbps >= 1) return '${mbps.toStringAsFixed(1)} Mbps';
-    return '${(bestSpeed / 1000).toStringAsFixed(0)} Kbps';
+  /// Best server by lowest load among healthy servers
+  WireguardServer? get bestServer {
+    if (servers.isEmpty) return null;
+    final healthy = servers.where((s) => s.isHealthy).toList();
+    if (healthy.isEmpty) return servers.first;
+    healthy.sort((a, b) => a.load.compareTo(b.load));
+    return healthy.first;
   }
+
+  /// Server count
+  int get serverCount => servers.length;
+
+  /// Best load label (from best server)
+  String get bestLoadLabel => bestServer?.loadLabel ?? '';
 
   /// Country flag emoji from country code
   String get flag {

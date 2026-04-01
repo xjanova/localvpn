@@ -7,7 +7,6 @@ import android.net.VpnService
 import android.os.Build
 import android.util.Log
 import androidx.core.content.FileProvider
-import id.laskarmedia.openvpn_flutter.OpenVPNFlutterPlugin
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -21,8 +20,6 @@ class MainActivity : FlutterActivity() {
     private val VPN_CHANNEL = "com.xjanova.localvpn/vpn"
     private val INSTALL_CHANNEL = "com.xjanova.localvpn/installer"
     private val VPN_REQUEST_CODE = 100
-    // OpenVPN Flutter plugin uses request code 24 for VPN permission
-    private val OPENVPN_REQUEST_CODE = 24
 
     private var pendingResult: MethodChannel.Result? = null
     private var pendingVirtualIp: String? = null
@@ -110,25 +107,6 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        // Handle OpenVPN plugin permission result.
-        // The openvpn_flutter plugin uses startActivityForResult with request code 24
-        // but does NOT implement ActivityResultListener, so the callback never fires.
-        // We must bridge it here by calling connectWhileGranted() ourselves.
-        if (requestCode == OPENVPN_REQUEST_CODE) {
-            val granted = resultCode == Activity.RESULT_OK
-            Log.d(TAG, "OpenVPN permission result: granted=$granted")
-            if (granted) {
-                OpenVPNFlutterPlugin.connectWhileGranted(true)
-            } else {
-                // Plugin's connectWhileGranted(false) does nothing — no stage callback
-                // fires, so Flutter stays stuck in "connecting" forever. Send a "denied"
-                // stage event through the plugin's own event channel.
-                val plugin = flutterEngine?.plugins?.get(OpenVPNFlutterPlugin::class.java)
-                if (plugin is OpenVPNFlutterPlugin) {
-                    plugin.updateStage("denied")
-                }
-            }
-        }
     }
 
     private fun startVpnService(virtualIp: String, subnet: String) {

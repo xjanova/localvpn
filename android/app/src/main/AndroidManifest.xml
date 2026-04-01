@@ -43,26 +43,6 @@
                 android:value="vpn_virtual_lan"/>
         </service>
 
-        <!--
-            Override openvpn_flutter plugin's OpenVPNService declaration.
-            The plugin declares foregroundServiceType="systemExempted" which is
-            ONLY valid for system apps — crashes on Android 14+ for third-party apps.
-            Override with "specialUse" which works for all apps.
-        -->
-        <service
-            android:name="de.blinkt.openvpn.core.OpenVPNService"
-            android:permission="android.permission.BIND_VPN_SERVICE"
-            android:exported="false"
-            android:foregroundServiceType="specialUse"
-            tools:replace="android:foregroundServiceType,android:permission">
-            <intent-filter>
-                <action android:name="android.net.VpnService"/>
-            </intent-filter>
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="vpn_proxy_openvpn"/>
-        </service>
-
         <!-- FileProvider for APK install (Android 7+) -->
         <provider
             android:name="androidx.core.content.FileProvider"

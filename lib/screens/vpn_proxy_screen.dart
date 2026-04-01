@@ -508,7 +508,7 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
   // ─────────────────────────────────────────────
   // ACTIONS
   // ─────────────────────────────────────────────
-  void _onCountryTap(ProxyCountry country) {
+  void _onCountryTap(ServerCountry country) {
     HapticFeedback.mediumImpact();
 
     // Warn if user is in a LAN — VPN will replace the LAN tunnel
@@ -520,7 +520,7 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
     _connectToCountry(country);
   }
 
-  void _connectToCountry(ProxyCountry country) {
+  void _connectToCountry(ServerCountry country) {
     if (widget.vpnProxyService.status == VpnProxyStatus.connected ||
         widget.vpnProxyService.status == VpnProxyStatus.connecting) {
       // Use switchToCountry for race-condition-safe reconnect
@@ -530,7 +530,7 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
     }
   }
 
-  void _showLanVpnWarning(ProxyCountry country) {
+  void _showLanVpnWarning(ServerCountry country) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -618,7 +618,7 @@ class _VpnProxyScreenState extends State<VpnProxyScreen> {
 // COUNTRY CARD (with latency bar)
 // ─────────────────────────────────────────────
 class _CountryCard extends StatelessWidget {
-  final ProxyCountry country;
+  final ServerCountry country;
   final bool isConnected;
   final VoidCallback onTap;
 
@@ -730,7 +730,7 @@ class _CountryCard extends StatelessWidget {
                 const SizedBox(width: 8),
                 // Speed
                 Text(
-                  country.bestSpeedLabel,
+                  country.bestLoadLabel,
                   style: TextStyle(
                     color: AppColors.primary,
                     fontSize: 10,
@@ -809,7 +809,7 @@ class _LatencyBar extends StatelessWidget {
 // LOCKED COUNTRY CHIP
 // ─────────────────────────────────────────────
 class _LockedCountryChip extends StatelessWidget {
-  final ProxyCountry country;
+  final ServerCountry country;
   final VoidCallback onTap;
 
   const _LockedCountryChip({required this.country, required this.onTap});
