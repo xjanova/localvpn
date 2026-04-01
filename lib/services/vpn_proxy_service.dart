@@ -25,6 +25,7 @@ class VpnProxyService extends ChangeNotifier {
 
   String? _deviceId;
   String? _licenseKey;
+  bool _disposed = false;
 
   late WireGuardFlutterInterface _wireguard;
   StreamSubscription<VpnStage>? _stageSubscription;
@@ -76,8 +77,8 @@ class VpnProxyService extends ChangeNotifier {
   String? _privateKey;
   String? _publicKey;
 
-  /// Cached WireGuard config for reconnection
-  String? _cachedWgConfig;
+  /// Cached WireGuard config parts for reconnection (no private key)
+  Map<String, dynamic>? _cachedConfigParts;
 
   /// Current server index for fallback retry within a country
   int _currentServerIndex = 0;
@@ -267,8 +268,14 @@ class VpnProxyService extends ChangeNotifier {
       } catch (_) {}
     }
 
-    // Load cached config
-    _cachedWgConfig = prefs.getString(_prefCachedConfig);
+    // Load cached config parts (no private key stored)
+    final cachedParts = prefs.getString(_prefCachedConfig);
+    if (cachedParts != null) {
+      try {
+        _cachedConfigParts =
+            jsonDecode(cachedParts) as Map<String, dynamic>;
+      } catch (_) {}
+    }
   }
 
   Future<void> _cacheServers() async {
@@ -280,11 +287,12 @@ class VpnProxyService extends ChangeNotifier {
     await prefs.setString(_prefCachedServers, jsonEncode(data));
   }
 
-  Future<void> _cacheConfig(String config, String serverName,
-      String countryCode, String countryName) async {
-    _cachedWgConfig = config;
+  /// Cache config parts (without private key) for reconnection
+  Future<void> _cacheConfig(Map<String, dynamic> configParts,
+      String serverName, String countryCode, String countryName) async {
+    _cachedConfigParts = configParts;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefCachedConfig, config);
+    await prefs.setString(_prefCachedConfig, jsonEncode(configParts));
     await prefs.setString(_prefCachedServerName, serverName);
     await prefs.setString(_prefCachedCountryCode, countryCode);
     await prefs.setString(_prefCachedCountryName, countryName);
@@ -580,7 +588,7 @@ class VpnProxyService extends ChangeNotifier {
     // Disconnect first, then reconnect
     _wireguard.stopVpn().then((_) {
       Future.delayed(const Duration(milliseconds: 500), () {
-        if (_connectingCountry != null) {
+        if (_connectingCountry != null && !_disposed) {
           _connectToServerAt(country, nextIndex, isRetry: true);
         }
       });
@@ -642,29 +650,28 @@ class VpnProxyService extends ChangeNotifier {
       final allowedIPs = peer['allowed_ips'] as String;
       final keepalive = peer['persistent_keepalive'] as int? ?? 25;
 
-      // Build WireGuard config string
-      final wgConfig = '[Interface]\n'
-          'PrivateKey = $_privateKey\n'
-          'Address = $address\n'
-          'DNS = $dns\n'
-          '\n'
-          '[Peer]\n'
-          'PublicKey = $serverPubKey\n'
-          'Endpoint = $endpoint\n'
-          'AllowedIPs = $allowedIPs\n'
-          'PersistentKeepalive = $keepalive\n';
+      // Build WireGuard config string (private key added in-memory only)
+      final configParts = {
+        'address': address,
+        'dns': dns,
+        'server_pub_key': serverPubKey,
+        'endpoint': endpoint,
+        'allowed_ips': allowedIPs,
+        'keepalive': keepalive,
+      };
+      final wgConfig = _buildWgConfig(configParts);
 
       // Extract server IP from endpoint for ping
       _connectedIp = endpoint.split(':').first;
 
-      // Cache the config for reconnection
+      // Cache config parts (without private key) for reconnection
       final serverInfo = data['server'] as Map<String, dynamic>?;
       final serverName = serverInfo?['name'] as String? ?? server.name;
       final countryCode =
           serverInfo?['country_code'] as String? ?? server.countryCode;
       final countryName =
           serverInfo?['country_name'] as String? ?? server.countryName;
-      await _cacheConfig(wgConfig, serverName, countryCode, countryName);
+      await _cacheConfig(configParts, serverName, countryCode, countryName);
 
       debugPrint(
           'WireGuard connect: $serverName | $endpoint | $address');
@@ -692,12 +699,12 @@ class VpnProxyService extends ChangeNotifier {
     } catch (e) {
       debugPrint('WireGuard connect error: $e');
       // If backend is unreachable, try cached config
-      if (_cachedWgConfig != null && !isRetry) {
+      if (_cachedConfigParts != null && !isRetry) {
         return _connectWithCachedConfig();
       }
       _connectionTimer?.cancel();
       _status = VpnProxyStatus.error;
-      _error = 'Could not connect to VPN: $e';
+      _error = 'Could not connect to VPN. Please try again.';
       _clearConnectionState();
       _connectingCountry = null;
       notifyListeners();
@@ -705,9 +712,23 @@ class VpnProxyService extends ChangeNotifier {
     }
   }
 
-  /// Reconnect using cached config (when backend is unreachable)
+  /// Build WireGuard config string from parts + private key
+  String _buildWgConfig(Map<String, dynamic> parts) {
+    return '[Interface]\n'
+        'PrivateKey = $_privateKey\n'
+        'Address = ${parts['address']}\n'
+        'DNS = ${parts['dns']}\n'
+        '\n'
+        '[Peer]\n'
+        'PublicKey = ${parts['server_pub_key']}\n'
+        'Endpoint = ${parts['endpoint']}\n'
+        'AllowedIPs = ${parts['allowed_ips']}\n'
+        'PersistentKeepalive = ${parts['keepalive'] ?? 25}\n';
+  }
+
+  /// Reconnect using cached config parts (when backend is unreachable)
   Future<bool> _connectWithCachedConfig() async {
-    if (_cachedWgConfig == null) return false;
+    if (_cachedConfigParts == null || _privateKey == null) return false;
 
     debugPrint('WireGuard reconnecting with cached config');
 
@@ -718,10 +739,7 @@ class VpnProxyService extends ChangeNotifier {
     _connectedCountry = countryCode;
     _connectedServerName = serverName;
 
-    // Extract endpoint from cached config
-    final endpointMatch =
-        RegExp(r'Endpoint\s*=\s*(.+)').firstMatch(_cachedWgConfig!);
-    final endpoint = endpointMatch?.group(1)?.trim() ?? '';
+    final endpoint = _cachedConfigParts!['endpoint'] as String? ?? '';
 
     if (endpoint.isEmpty) {
       _status = VpnProxyStatus.error;
@@ -732,11 +750,12 @@ class VpnProxyService extends ChangeNotifier {
     }
 
     _connectedIp = endpoint.split(':').first;
+    final wgConfig = _buildWgConfig(_cachedConfigParts!);
 
     try {
       await _wireguard.startVpn(
         serverAddress: endpoint,
-        wgQuickConfig: _cachedWgConfig!,
+        wgQuickConfig: wgConfig,
         providerBundleIdentifier: 'com.xjanova.localvpn.WGExtension',
       );
 
@@ -754,7 +773,7 @@ class VpnProxyService extends ChangeNotifier {
       return true;
     } catch (e) {
       _status = VpnProxyStatus.error;
-      _error = 'Could not connect with cached config: $e';
+      _error = 'Could not reconnect to VPN. Please try again.';
       _clearConnectionState();
       notifyListeners();
       return false;
@@ -822,19 +841,15 @@ class VpnProxyService extends ChangeNotifier {
 
   // ─── Ping ──────────────────────────────────────────────────────────
 
-  /// Ping a server to measure latency
+  /// Ping a server to measure latency (ICMP-like via UDP)
   Future<int?> pingServer(WireguardServer server) async {
     try {
       final host = server.endpoint.split(':').first;
-      final port = int.tryParse(server.endpoint.split(':').last) ?? 51820;
       final sw = Stopwatch()..start();
-      final socket = await Socket.connect(
-        host,
-        port,
-        timeout: const Duration(seconds: 3),
-      );
+      // Use InternetAddress.lookup as a proxy for latency (DNS/reachability)
+      await InternetAddress.lookup(host)
+          .timeout(const Duration(seconds: 3));
       sw.stop();
-      socket.destroy();
       final ms = sw.elapsedMilliseconds;
       server.measuredPing = ms;
       return ms;
@@ -889,10 +904,12 @@ class VpnProxyService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _connectionTimer?.cancel();
     _connectionTimer = null;
     _stageSubscription?.cancel();
     _trafficSubscription?.cancel();
+    _connectingCountry = null;
     if (_status == VpnProxyStatus.connected ||
         _status == VpnProxyStatus.connecting) {
       _wireguard.stopVpn();

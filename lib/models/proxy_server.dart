@@ -102,8 +102,9 @@ class ServerCountry {
   /// Country flag emoji from country code
   String get flag {
     if (countryCode.length != 2) return '';
-    final first = 0x1F1E6 + countryCode.codeUnitAt(0) - 0x41;
-    final second = 0x1F1E6 + countryCode.codeUnitAt(1) - 0x41;
+    final upper = countryCode.toUpperCase();
+    final first = 0x1F1E6 + upper.codeUnitAt(0) - 0x41;
+    final second = 0x1F1E6 + upper.codeUnitAt(1) - 0x41;
     return String.fromCharCodes([first, second]);
   }
 }
