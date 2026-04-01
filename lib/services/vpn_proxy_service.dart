@@ -26,6 +26,7 @@ class VpnProxyService extends ChangeNotifier {
   String? _deviceId;
   String? _licenseKey;
   bool _disposed = false;
+  bool _initialCheckDone = false;
 
   late WireGuardFlutterInterface _wireguard;
   StreamSubscription<VpnStage>? _stageSubscription;
@@ -113,7 +114,43 @@ class VpnProxyService extends ChangeNotifier {
 
     _loadKeys();
     _loadLastCountry();
-    _loadCachedServers();
+    _initializeState();
+  }
+
+  /// Load cached data then check if VPN is already running
+  Future<void> _initializeState() async {
+    await _loadCachedServers();
+    await _checkExistingConnection();
+  }
+
+  /// Check if VPN is already running (e.g. app was killed and reopened)
+  Future<void> _checkExistingConnection() async {
+    try {
+      final currentStage = await _wireguard.stage();
+      debugPrint('WireGuard initial stage: ${currentStage.name}');
+
+      if (currentStage == VpnStage.connected) {
+        // VPN is still running — restore UI state from cache
+        final prefs = await SharedPreferences.getInstance();
+        _connectedServerName = prefs.getString(_prefCachedServerName);
+        _connectedCountry = prefs.getString(_prefCachedCountryCode);
+        _connectedIp = _cachedConfigParts?['endpoint']?.toString().split(':').first;
+        _status = VpnProxyStatus.connected;
+        _error = null;
+        notifyListeners();
+      } else if (currentStage == VpnStage.connecting ||
+          currentStage == VpnStage.waitingConnection ||
+          currentStage == VpnStage.authenticating ||
+          currentStage == VpnStage.reconnect ||
+          currentStage == VpnStage.preparing) {
+        _status = VpnProxyStatus.connecting;
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('WireGuard initial stage check failed: $e');
+    } finally {
+      _initialCheckDone = true;
+    }
   }
 
   // ─── Key Management ────────────────────────────────────────────────
@@ -302,7 +339,11 @@ class VpnProxyService extends ChangeNotifier {
 
   void _onStageChanged(VpnStage stage) {
     debugPrint('WireGuard stage: ${stage.name} [status=$_status, '
-        'connectingCountry=${_connectingCountry?.countryCode}]');
+        'initialCheckDone=$_initialCheckDone]');
+
+    // Ignore stage events until initial connection check is done
+    // (prevents stale disconnect from overriding a restored connected state)
+    if (!_initialCheckDone) return;
 
     // Don't override disconnecting state with connected (race condition)
     if (_status == VpnProxyStatus.disconnecting && stage == VpnStage.connected) {
@@ -910,10 +951,7 @@ class VpnProxyService extends ChangeNotifier {
     _stageSubscription?.cancel();
     _trafficSubscription?.cancel();
     _connectingCountry = null;
-    if (_status == VpnProxyStatus.connected ||
-        _status == VpnProxyStatus.connecting) {
-      _wireguard.stopVpn();
-    }
+    // Do NOT stop VPN on dispose — it should keep running in the background
     super.dispose();
   }
 }
