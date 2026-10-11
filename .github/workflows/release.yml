@@ -85,6 +85,13 @@ jobs:
       - name: Run tests
         run: flutter test
 
+      - name: Test fleet node (tools/lvnode)
+        working-directory: tools/lvnode
+        run: |
+          dart pub get
+          dart analyze
+          dart test
+
       - name: Build Release APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}

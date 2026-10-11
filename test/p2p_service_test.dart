@@ -18,7 +18,7 @@ const _vipOld = '10.10.0.9';
 /// only the direct path is exercised.
 class _Node {
   _Node(this.name, this.vip, this.identity)
-    : service = P2pService(identity: identity) {
+    : service = P2pService(identity: identity, stunServers: const []) {
     service.configure(deviceId: 'device-$name', licenseKey: '');
     service.onPeerData = (vip, data) => data$.add((vip, data));
     service.onFileMessage = (vip, data) => files.add((vip, data));
@@ -308,4 +308,56 @@ void main() {
       expect(delivered, 1);
     },
   );
+
+  test('a big file message travels as sealed pieces and arrives whole',
+      () async {
+    await connect();
+    // A 32 KB chunk response is ~44 KB once base64-encoded.
+    final message = Uint8List.fromList(
+        List.generate(44 * 1024 + 123, (i) => (i * 31 + 7) & 0xFF));
+    expect(await a.service.sendFileMessage(_vipB, message), isTrue);
+    await _until(() => b.files.isNotEmpty, reason: 'reassembled message');
+    expect(b.files.single.$1, _vipA);
+    expect(b.files.single.$2, message);
+  });
+
+  test('STUN runs on the P2P socket and reports its public endpoint',
+      () async {
+    // A STUN server on this machine: answers a Binding request with the
+    // address it came from, like a real one behind no NAT.
+    final stun = await RawDatagramSocket.bind(InternetAddress.loopbackIPv4, 0);
+    stun.listen((e) {
+      if (e != RawSocketEvent.read) return;
+      final d = stun.receive();
+      if (d == null || d.data.length < 20) return;
+      final reply = Uint8List(32)
+        ..[0] = 0x01
+        ..[1] = 0x01
+        ..[3] = 12
+        ..setRange(4, 20, d.data, 4) // cookie + transaction id
+        ..[20] = 0x00
+        ..[21] = 0x20 // XOR-MAPPED-ADDRESS
+        ..[23] = 8
+        ..[25] = 0x01;
+      final port = d.port ^ 0x2112;
+      reply[26] = port >> 8;
+      reply[27] = port & 0xFF;
+      final ip = d.address.rawAddress;
+      const cookie = [0x21, 0x12, 0xA4, 0x42];
+      for (var i = 0; i < 4; i++) {
+        reply[28 + i] = ip[i] ^ cookie[i];
+      }
+      stun.send(reply, d.address, d.port);
+    });
+    final c = P2pService(
+      identity: await P2pIdentity.generate(),
+      stunServers: [('127.0.0.1', stun.port), ('127.0.0.1', stun.port)],
+    )..configure(deviceId: 'device-carol', licenseKey: '');
+    expect(await c.start('lan-party'), isTrue);
+    expect(c.publicIp, '127.0.0.1');
+    expect(c.publicPort, c.localUdpPort);
+    expect(c.natMapping.name, 'endpointIndependent');
+    await c.stop();
+    stun.close();
+  });
 }

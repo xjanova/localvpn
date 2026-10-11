@@ -1,0 +1,14 @@
+name: lvnode
+description: LocalVPN fleet node — LVR1 UDP relay, WireGuard exit and usage reporting.
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  crypto: ^3.0.3
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.25.0

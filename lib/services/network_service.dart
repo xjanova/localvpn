@@ -534,6 +534,8 @@ class NetworkService extends ChangeNotifier {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
+        // The UDP relay for members we can't punch to (null = none now).
+        _p2pService?.setRelay(RelayInfo.fromJson(data['relay']));
         final peers = data['peers'] as List?;
         if (peers != null) {
           try {

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -12,10 +13,11 @@ import 'package:path_provider/path_provider.dart';
 
 import 'p2p_service.dart';
 
-/// Compute SHA256 hash of a file in a separate isolate (top-level for compute())
+/// SHA-256 of a file, streamed so a multi-GB file never sits in memory
+/// (top-level for compute()).
 Future<String> _computeFileHash(String filePath) async {
-  final bytes = await File(filePath).readAsBytes();
-  return sha256.convert(bytes).toString();
+  final digest = await sha256.bind(File(filePath).openRead()).first;
+  return digest.toString();
 }
 
 /// File transfer state
@@ -185,7 +187,14 @@ class FileTransfer {
 class FileTransferService extends ChangeNotifier {
   static const String _baseUrl = 'https://xman4289.com/api/v1/localvpn';
   static const int _defaultChunkSize = 32768;
-  static const int _maxConcurrentChunkRequests = 8;
+
+  // Each seeder gets a few chunk requests at a time; a chunk that doesn't
+  // arrive in time is asked for again, from the next seeder.
+  static const int _perSeederWindow = 6;
+  static const int _maxWindow = 24;
+  static const Duration _chunkTimeout = Duration(seconds: 6);
+  static const int _maxChunkAttempts = 8;
+  static const int _maxServingPerPeer = 16;
 
   P2pService? _p2pService;
   String? _deviceId;
@@ -202,11 +211,13 @@ class FileTransferService extends ChangeNotifier {
   final List<FileTransfer> _transfers = [];
   List<FileTransfer> get transfers => List.unmodifiable(_transfers);
 
-  // Chunk buffers for incoming files
-  final Map<String, Map<int, Uint8List>> _chunkBuffers = {};
+  // Downloads in progress, by file hash
+  final Map<String, _Download> _downloads = {};
+  Timer? _ticker;
+  Timer? _notifyTimer;
 
-  // Pending chunk requests (for multi-peer scheduling)
-  final Map<String, Set<int>> _pendingChunks = {};
+  // Chunk reads in flight per requesting peer (seeder side)
+  final Map<String, int> _servingFor = {};
 
   bool _isLoading = false;
   bool get isLoading => _isLoading;
@@ -233,6 +244,13 @@ class FileTransferService extends ChangeNotifier {
   }
 
   void setNetwork(String? slug) {
+    if (slug != _networkSlug) {
+      // The seeders were members of the old network; they can't be reached.
+      for (final d in _downloads.values.toList()) {
+        _failDownload(d, 'ย้ายวงแล้ว — การดาวน์โหลดถูกหยุด',
+            status: TransferStatus.cancelled);
+      }
+    }
     _networkSlug = slug;
     if (slug == null) {
       _networkFiles.clear();
@@ -371,7 +389,6 @@ class FileTransferService extends ChangeNotifier {
       totalChunks: remoteFile.totalChunks,
     );
     _transfers.add(transfer);
-    _chunkBuffers[remoteFile.fileHash] = {};
     notifyListeners();
 
     // Get seeders from server
@@ -396,13 +413,14 @@ class FileTransferService extends ChangeNotifier {
           return transfer;
         }
 
+        if (transfer.status == TransferStatus.cancelled) return transfer;
         transfer.status = TransferStatus.transferring;
         transfer.activeSeeders
             .addAll(seeders.map((s) => s.virtualIp));
         notifyListeners();
 
         // Request chunks from multiple seeders
-        _requestChunksFromSwarm(transfer, seeders);
+        await _startDownload(transfer, seeders);
       } else {
         transfer.status = TransferStatus.failed;
         transfer.error = 'ไม่สามารถดึงรายชื่อ seeder ได้';
@@ -417,37 +435,115 @@ class FileTransferService extends ChangeNotifier {
     return transfer;
   }
 
-  /// Request chunks from multiple seeders (round-robin)
-  void _requestChunksFromSwarm(
-      FileTransfer transfer, List<FileSeeder> seeders) {
-    if (seeders.isEmpty) return;
+  /// Opens the .part file and starts asking the seeders for chunks.
+  Future<void> _startDownload(
+      FileTransfer transfer, List<FileSeeder> seeders) async {
+    final String partPath;
+    final RandomAccessFile file;
+    try {
+      final downloadDir = debugDownloadDirectory ??
+          Directory(path.join((await getApplicationDocumentsDirectory()).path,
+              'LocalVPN', 'Downloads'));
+      await downloadDir.create(recursive: true);
+      partPath = path.join(
+          downloadDir.path, '.${transfer.fileHash.substring(0, 16)}.part');
+      file = await File(partPath).open(mode: FileMode.write);
+    } catch (e) {
+      debugPrint('Download file open error: $e');
+      transfer.status = TransferStatus.failed;
+      transfer.error = 'สร้างไฟล์ในเครื่องไม่ได้ — ตรวจสอบพื้นที่ว่าง';
+      notifyListeners();
+      return;
+    }
+    if (transfer.status != TransferStatus.transferring) {
+      await file.close();
+      await _deleteQuietly(partPath);
+      return;
+    }
+    final d = _Download(
+      transfer,
+      [for (final s in seeders) s.virtualIp],
+      partPath,
+      file,
+    );
+    for (var i = 0; i < transfer.totalChunks; i++) {
+      if (!transfer.completedChunks.contains(i)) d.todo.add(i);
+    }
+    _downloads[transfer.fileHash] = d;
+    if (transfer.totalChunks == 0) {
+      unawaited(_finishDownload(d));
+      return;
+    }
+    _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+    _pump(d);
+  }
 
-    final remainingChunks = <int>[];
-    for (int i = 0; i < transfer.totalChunks; i++) {
-      if (!transfer.completedChunks.contains(i)) {
-        remainingChunks.add(i);
+  /// Keeps each seeder's window full.
+  void _pump(_Download d) {
+    final t = d.transfer;
+    if (t.status != TransferStatus.transferring) return;
+    final window = min(_maxWindow, _perSeederWindow * d.seeders.length);
+    while (d.inFlight.length < window && d.todo.isNotEmpty) {
+      final chunk = d.todo.removeFirst();
+      if (t.completedChunks.contains(chunk) || d.inFlight.containsKey(chunk)) {
+        continue;
+      }
+      final seeder = _pickSeeder(d, avoid: d.lastSeeder[chunk]);
+      if (seeder == null) {
+        d.todo.addFirst(chunk);
+        return;
+      }
+      d.inFlight[chunk] = _InFlight(seeder, DateTime.now());
+      d.lastSeeder[chunk] = seeder;
+      _sendChunkRequest(seeder, t.fileHash, chunk);
+    }
+  }
+
+  /// The seeder with the most room, preferring ones we have a path to and,
+  /// for a retry, another one than last time.
+  String? _pickSeeder(_Download d, {String? avoid}) {
+    String? best;
+    var bestScore = -1 << 30;
+    for (final vip in d.seeders) {
+      final busy = d.inFlight.values.where((f) => f.seeder == vip).length;
+      if (busy >= _perSeederWindow) continue;
+      final path = _p2pService?.pathOf(vip);
+      var score = -busy * 10;
+      if (path == P2pPath.direct) score += 100;
+      if (path == P2pPath.relay) score += 50;
+      if (vip == avoid && d.seeders.length > 1) score -= 200;
+      if (score > bestScore) {
+        bestScore = score;
+        best = vip;
       }
     }
+    return best;
+  }
 
-    _pendingChunks[transfer.fileHash] = remainingChunks.toSet();
-
-    // Distribute chunks across seeders (round-robin)
-    int seederIndex = 0;
-    int concurrent = 0;
-
-    for (final chunkIndex in remainingChunks) {
-      if (transfer.status == TransferStatus.cancelled) return;
-      if (concurrent >= _maxConcurrentChunkRequests) break;
-
-      final seeder = seeders[seederIndex % seeders.length];
-      seederIndex++;
-      concurrent++;
-
-      _sendChunkRequest(
-        seeder.virtualIp,
-        transfer.fileHash,
-        chunkIndex,
-      );
+  /// Once a second: chunks that didn't arrive in time go back in the queue.
+  void _tick() {
+    final now = DateTime.now();
+    for (final d in _downloads.values.toList()) {
+      if (d.transfer.status != TransferStatus.transferring || d.finishing) {
+        continue;
+      }
+      for (final e in d.inFlight.entries.toList()) {
+        if (now.difference(e.value.sentAt) < _chunkTimeout) continue;
+        d.inFlight.remove(e.key);
+        final attempts = (d.attempts[e.key] ?? 0) + 1;
+        d.attempts[e.key] = attempts;
+        if (attempts >= _maxChunkAttempts) {
+          _failDownload(
+              d, 'เพื่อนที่แชร์ไฟล์ไม่ตอบ — ลองดาวน์โหลดใหม่อีกครั้ง');
+          break;
+        }
+        d.todo.addFirst(e.key);
+      }
+      _pump(d);
+    }
+    if (_downloads.isEmpty) {
+      _ticker?.cancel();
+      _ticker = null;
     }
   }
 
@@ -463,24 +559,59 @@ class FileTransferService extends ChangeNotifier {
         _transfers.where((t) => t.fileHash == fileHash).firstOrNull;
     if (transfer == null) return;
 
-    transfer.status = TransferStatus.cancelled;
-    _chunkBuffers.remove(fileHash);
-    _pendingChunks.remove(fileHash);
-
-    // Notify seeders
-    for (final vip in transfer.activeSeeders) {
-      final msg = utf8.encode('LVPN_FILE_CANCEL:$fileHash');
-      _p2pService?.sendFileMessage(vip, Uint8List.fromList(msg));
+    final d = _downloads[fileHash];
+    if (d != null) {
+      _failDownload(d, null, status: TransferStatus.cancelled);
+    } else {
+      transfer.status = TransferStatus.cancelled;
+      _notifySeedersCancelled(transfer);
     }
     notifyListeners();
   }
 
   /// Remove transfer from list
   void removeTransfer(String fileHash) {
+    final d = _downloads[fileHash];
+    if (d != null) {
+      _failDownload(d, null, status: TransferStatus.cancelled);
+    }
     _transfers.removeWhere((t) => t.fileHash == fileHash);
-    _chunkBuffers.remove(fileHash);
-    _pendingChunks.remove(fileHash);
     notifyListeners();
+  }
+
+  void _notifySeedersCancelled(FileTransfer transfer) {
+    for (final vip in transfer.activeSeeders) {
+      final msg = utf8.encode('LVPN_FILE_CANCEL:${transfer.fileHash}');
+      _p2pService?.sendFileMessage(vip, Uint8List.fromList(msg));
+    }
+  }
+
+  /// Stops a download, deletes its .part file and records why.
+  void _failDownload(
+    _Download d,
+    String? error, {
+    TransferStatus status = TransferStatus.failed,
+  }) {
+    final t = d.transfer;
+    if (_downloads[t.fileHash] == d) _downloads.remove(t.fileHash);
+    t.status = status;
+    t.error = error;
+    d.todo.clear();
+    d.inFlight.clear();
+    _notifySeedersCancelled(t);
+    d.writes = d.writes.then((_) async {
+      try {
+        await d.file.close();
+      } catch (_) {}
+      await _deleteQuietly(d.partPath);
+    });
+    notifyListeners();
+  }
+
+  static Future<void> _deleteQuietly(String filePath) async {
+    try {
+      await File(filePath).delete();
+    } catch (_) {}
   }
 
   // ==================== P2P Message Handling ====================
@@ -490,7 +621,7 @@ class FileTransferService extends ChangeNotifier {
     final text = utf8.decode(data, allowMalformed: true);
 
     if (text.startsWith('LVPN_FILE_CHUNK_REQ:')) {
-      _handleChunkRequest(fromVirtualIp, text.substring(19));
+      _handleChunkRequest(fromVirtualIp, text.substring(20));
     } else if (text.startsWith('LVPN_FILE_CHUNK_RES:')) {
       _handleChunkResponse(fromVirtualIp, text.substring(20));
     } else if (text.startsWith('LVPN_FILE_CANCEL:')) {
@@ -505,13 +636,23 @@ class FileTransferService extends ChangeNotifier {
 
     final fileHash = parts[0];
     final chunkIndex = int.tryParse(parts[1]);
-    if (chunkIndex == null) return;
+    if (chunkIndex == null || chunkIndex < 0) return;
 
     final filePath = _localFilePaths[fileHash];
     if (filePath == null) return;
 
-    // Read chunk and send
-    _sendChunkData(fromVip, fileHash, chunkIndex, filePath);
+    // A peer gets a bounded number of reads at a time.
+    final serving = _servingFor[fromVip] ?? 0;
+    if (serving >= _maxServingPerPeer) return;
+    _servingFor[fromVip] = serving + 1;
+    _sendChunkData(fromVip, fileHash, chunkIndex, filePath).whenComplete(() {
+      final n = (_servingFor[fromVip] ?? 1) - 1;
+      if (n <= 0) {
+        _servingFor.remove(fromVip);
+      } else {
+        _servingFor[fromVip] = n;
+      }
+    });
   }
 
   /// Read a chunk from local file and send to requester
@@ -521,22 +662,20 @@ class FileTransferService extends ChangeNotifier {
     int chunkIndex,
     String filePath,
   ) async {
+    RandomAccessFile? raf;
     try {
-      final file = File(filePath);
-      final raf = await file.open();
-
-      final start = chunkIndex * _defaultChunkSize;
-      await raf.setPosition(start);
-
+      raf = await File(filePath).open();
       final fileLength = await raf.length();
+      final start = chunkIndex * _defaultChunkSize;
+      if (start >= fileLength) return;
+      await raf.setPosition(start);
       final end = min(start + _defaultChunkSize, fileLength);
       final chunk = await raf.read(end - start);
-      await raf.close();
 
       final chunkB64 = base64Encode(chunk);
       final msg =
           utf8.encode('LVPN_FILE_CHUNK_RES:$fileHash|$chunkIndex|$chunkB64');
-      _p2pService?.sendFileMessage(targetVip, Uint8List.fromList(msg));
+      await _p2pService?.sendFileMessage(targetVip, Uint8List.fromList(msg));
 
       // Track upload
       final uploadTransfer = _transfers
@@ -547,15 +686,17 @@ class FileTransferService extends ChangeNotifier {
       if (uploadTransfer != null) {
         uploadTransfer.bytesTransferred += chunk.length;
         uploadTransfer.completedChunks.add(chunkIndex);
-        notifyListeners();
+        _notifySoon();
       }
     } catch (e) {
       debugPrint('Send chunk error: $e');
+    } finally {
+      await raf?.close();
     }
   }
 
   /// Received a chunk from a seeder
-  Future<void> _handleChunkResponse(String fromVip, String payload) async {
+  void _handleChunkResponse(String fromVip, String payload) {
     // Format: {hash}|{chunkIndex}|{base64data}
     final firstPipe = payload.indexOf('|');
     if (firstPipe == -1) return;
@@ -565,111 +706,103 @@ class FileTransferService extends ChangeNotifier {
     final fileHash = payload.substring(0, firstPipe);
     final chunkIndex =
         int.tryParse(payload.substring(firstPipe + 1, secondPipe));
-    if (chunkIndex == null) return;
-
-    final chunkB64 = payload.substring(secondPipe + 1);
+    final d = _downloads[fileHash];
+    if (chunkIndex == null || d == null || d.finishing) return;
+    final t = d.transfer;
+    if (t.status != TransferStatus.transferring ||
+        chunkIndex < 0 ||
+        chunkIndex >= t.totalChunks ||
+        t.completedChunks.contains(chunkIndex) ||
+        !d.seeders.contains(fromVip)) {
+      return;
+    }
 
     Uint8List chunkData;
     try {
-      chunkData = base64Decode(chunkB64);
+      chunkData = base64Decode(payload.substring(secondPipe + 1));
     } catch (_) {
       return;
     }
+    final expected = chunkIndex < t.totalChunks - 1
+        ? t.chunkSize
+        : t.fileSize - t.chunkSize * (t.totalChunks - 1);
+    if (chunkData.length != expected) return; // asked again on timeout
 
-    final transfer = _transfers
-        .where((t) =>
-            t.fileHash == fileHash &&
-            t.direction == TransferDirection.download)
-        .firstOrNull;
-    if (transfer == null || transfer.status == TransferStatus.cancelled) return;
+    t.completedChunks.add(chunkIndex);
+    t.bytesTransferred += chunkData.length;
+    d.inFlight.remove(chunkIndex);
+    d.writes = d.writes.then((_) async {
+      await d.file.setPosition(chunkIndex * t.chunkSize);
+      await d.file.writeFrom(chunkData);
+    }).catchError((Object e) {
+      debugPrint('Chunk write error: $e');
+      if (_downloads[fileHash] == d) {
+        _failDownload(d, 'บันทึกไฟล์ไม่ได้ — ตรวจสอบพื้นที่ว่าง');
+      }
+    });
 
-    // Store chunk
-    _chunkBuffers[fileHash] ??= {};
-    _chunkBuffers[fileHash]![chunkIndex] = chunkData;
-    transfer.completedChunks.add(chunkIndex);
-    transfer.bytesTransferred += chunkData.length;
-
-    // Remove from pending
-    _pendingChunks[fileHash]?.remove(chunkIndex);
-
-    // Request next pending chunk from this seeder (keep pipeline full)
-    final remaining = _pendingChunks[fileHash];
-    if (remaining != null && remaining.isNotEmpty) {
-      final nextChunk = remaining.first;
-      _sendChunkRequest(fromVip, fileHash, nextChunk);
-    }
-
-    // Check if all chunks received
-    if (transfer.completedChunks.length >= transfer.totalChunks) {
-      await _assembleFile(transfer);
+    if (t.completedChunks.length >= t.totalChunks) {
+      unawaited(_finishDownload(d));
     } else {
-      notifyListeners();
+      _pump(d);
+      _notifySoon();
     }
   }
 
-  /// Assemble downloaded chunks into final file
-  Future<void> _assembleFile(FileTransfer transfer) async {
-    final chunks = _chunkBuffers[transfer.fileHash];
-    if (chunks == null) {
-      transfer.status = TransferStatus.failed;
-      transfer.error = 'ไม่มีข้อมูล chunk';
-      notifyListeners();
-      return;
-    }
-
+  /// All chunks are on disk: check the hash, then give the file its name.
+  Future<void> _finishDownload(_Download d) async {
+    if (d.finishing) return;
+    d.finishing = true;
+    final t = d.transfer;
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      final downloadDir = Directory('${dir.path}/LocalVPN/Downloads');
-      if (!await downloadDir.exists()) {
-        await downloadDir.create(recursive: true);
-      }
+      await d.writes;
+      if (t.status != TransferStatus.transferring) return;
+      await d.file.flush();
+      await d.file.close();
 
-      // Assemble in order
-      final buffer = BytesBuilder();
-      for (int i = 0; i < transfer.totalChunks; i++) {
-        final chunk = chunks[i];
-        if (chunk == null) {
-          transfer.status = TransferStatus.failed;
-          transfer.error = 'chunk $i หายไป';
-          notifyListeners();
-          return;
-        }
-        buffer.add(chunk);
-      }
-
-      final assembled = buffer.toBytes();
-
-      // Verify hash
-      final hash = sha256.convert(assembled).toString();
-      if (hash != transfer.fileHash) {
-        transfer.status = TransferStatus.failed;
-        transfer.error = 'ไฟล์เสียหาย (hash ไม่ตรง)';
+      final hash = await compute(_computeFileHash, d.partPath);
+      if (_downloads[t.fileHash] != d) return; // cancelled meanwhile
+      if (hash != t.fileHash) {
+        _downloads.remove(t.fileHash);
+        await _deleteQuietly(d.partPath);
+        t.status = TransferStatus.failed;
+        t.error = 'ไฟล์เสียหาย (hash ไม่ตรง) — ลองดาวน์โหลดใหม่';
         notifyListeners();
         return;
       }
 
-      // Save file. The name comes from whoever shared it: keep only a safe
-      // base name (no "..\\" escapes, no drive or device names) and never
-      // overwrite an existing file.
-      final filePath =
-          await _uniquePath(downloadDir.path, _safeFileName(transfer.fileName));
-      await File(filePath).writeAsBytes(assembled, flush: true);
+      // The name comes from whoever shared it: keep only a safe base name
+      // (no "..\\" escapes, no drive or device names) and never overwrite
+      // an existing file.
+      final filePath = await _uniquePath(
+          path.dirname(d.partPath), _safeFileName(t.fileName));
+      await File(d.partPath).rename(filePath);
+      _downloads.remove(t.fileHash);
 
-      transfer.localPath = filePath;
-      transfer.status = TransferStatus.completed;
-      _chunkBuffers.remove(transfer.fileHash);
-      _pendingChunks.remove(transfer.fileHash);
+      t.localPath = filePath;
+      t.status = TransferStatus.completed;
 
       // Become a seeder! (BitTorrent style)
-      _localFilePaths[transfer.fileHash] = filePath;
-      _registerAsSeeder(transfer.fileHash);
+      _localFilePaths[t.fileHash] = filePath;
+      _registerAsSeeder(t.fileHash);
 
       notifyListeners();
     } catch (e) {
-      transfer.status = TransferStatus.failed;
-      transfer.error = 'บันทึกไฟล์ล้มเหลว: $e';
+      debugPrint('Finish download error: $e');
+      _downloads.remove(t.fileHash);
+      await _deleteQuietly(d.partPath);
+      t.status = TransferStatus.failed;
+      t.error = 'บันทึกไฟล์ล้มเหลว — ตรวจสอบพื้นที่ว่างแล้วลองใหม่';
       notifyListeners();
     }
+  }
+
+  /// Progress updates at most five times a second, not once per chunk.
+  void _notifySoon() {
+    _notifyTimer ??= Timer(const Duration(milliseconds: 200), () {
+      _notifyTimer = null;
+      notifyListeners();
+    });
   }
 
   static const _reservedNames = {
@@ -730,11 +863,67 @@ class FileTransferService extends ChangeNotifier {
   /// Check if we have a file locally (are seeder)
   bool isSeeder(String fileHash) => _localFilePaths.containsKey(fileHash);
 
+  // ── Tests only ──
+  @visibleForTesting
+  Directory? debugDownloadDirectory;
+
+  @visibleForTesting
+  void debugSeedLocalFile(String fileHash, String filePath) =>
+      _localFilePaths[fileHash] = filePath;
+
+  /// [downloadFile] without the server: the seeders are given.
+  @visibleForTesting
+  Future<FileTransfer> debugDownloadFrom(
+      SharedFile file, List<String> seeders) async {
+    final transfer = FileTransfer(
+      fileHash: file.fileHash,
+      fileName: file.fileName,
+      fileSize: file.fileSize,
+      direction: TransferDirection.download,
+      peerDisplayName: '${seeders.length} seeders',
+      chunkSize: file.chunkSize,
+      totalChunks: file.totalChunks,
+    )..status = TransferStatus.transferring;
+    _transfers.add(transfer);
+    await _startDownload(transfer, [
+      for (final vip in seeders) FileSeeder(virtualIp: vip, displayName: vip),
+    ]);
+    return transfer;
+  }
+
   @override
   void dispose() {
-    _chunkBuffers.clear();
-    _pendingChunks.clear();
+    _ticker?.cancel();
+    _notifyTimer?.cancel();
+    for (final d in _downloads.values) {
+      d.file.close().catchError((_) => d.file);
+    }
+    _downloads.clear();
     _p2pService = null;
     super.dispose();
   }
+}
+
+class _InFlight {
+  _InFlight(this.seeder, this.sentAt);
+  final String seeder;
+  final DateTime sentAt;
+}
+
+/// One download: chunks still to ask for, chunks asked for, the .part file.
+class _Download {
+  _Download(this.transfer, this.seeders, this.partPath, this.file);
+
+  final FileTransfer transfer;
+  final List<String> seeders;
+  final String partPath;
+  final RandomAccessFile file;
+  final Queue<int> todo = Queue();
+  final Map<int, _InFlight> inFlight = {};
+  final Map<int, int> attempts = {};
+  final Map<int, String> lastSeeder = {};
+
+  /// Writes run one after another (a RandomAccessFile takes one at a time).
+  Future<void> writes = Future.value();
+  bool finishing = false;
 }

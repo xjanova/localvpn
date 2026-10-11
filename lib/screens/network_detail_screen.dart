@@ -11,6 +11,8 @@ import '../services/net/latency_probe.dart';
 import '../services/sound_service.dart';
 import '../services/vpn_proxy_service.dart';
 import '../widgets/m3/m3.dart';
+import '../services/p2p_service.dart';
+import '../widgets/peer_path_tag.dart';
 import 'shell/app_services.dart';
 import 'shell/app_shell.dart';
 
@@ -546,7 +548,6 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
     final p = context.m3;
     final connected = isCurrent && s.vpn.isConnected;
     final online = members.where((m) => m.isOnline).length;
-    final peers = s.p2p.peers;
     final pingAt = _pingAt;
 
     String? subtitle;
@@ -611,7 +612,7 @@ class _NetworkDetailScreenState extends State<NetworkDetailScreen> {
                 child: _MemberRow(
                   member: members[i],
                   self: _isSelf(members[i]),
-                  direct: peers[members[i].virtualIp]?.isDirectConnected,
+                  path: s.p2p.pathOf(members[i].virtualIp),
                   showPing: connected &&
                       members[i].virtualIp != null &&
                       _ping.containsKey(members[i].virtualIp),
@@ -1073,7 +1074,7 @@ class _Metric extends StatelessWidget {
 class _MemberRow extends StatelessWidget {
   final NetworkMember member;
   final bool self;
-  final bool? direct;
+  final P2pPath? path;
   final bool showPing;
   final double? pingMs;
   final bool compact;
@@ -1082,7 +1083,7 @@ class _MemberRow extends StatelessWidget {
   const _MemberRow({
     required this.member,
     required this.self,
-    required this.direct,
+    required this.path,
     required this.showPing,
     required this.pingMs,
     required this.compact,
@@ -1138,11 +1139,8 @@ class _MemberRow extends StatelessWidget {
               ),
             if (self)
               const M3Tag('เครื่องนี้', tone: M3Tone.cyan)
-            else if (m.isOnline && direct != null)
-              M3Tag(
-                direct! ? 'P2P ตรง' : 'ผ่านรีเลย์',
-                tone: direct! ? M3Tone.green : M3Tone.amber,
-              ),
+            else if (m.isOnline && path != null)
+              PeerPathTag(path!),
             if (!m.isOnline)
               M3Tag(_lastSeen(m.lastHeartbeat), tone: M3Tone.neutral),
             if (m.isVpnGateway)

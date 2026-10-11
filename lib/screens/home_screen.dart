@@ -7,6 +7,8 @@ import '../platform/platform_info.dart';
 import '../services/game_boost_service.dart';
 import '../services/vpn_proxy_service.dart';
 import '../widgets/m3/m3.dart';
+import '../services/p2p_service.dart';
+import '../widgets/peer_path_tag.dart';
 import 'network_detail_screen.dart';
 import 'shell/app_services.dart';
 import 'shell/app_shell.dart';
@@ -152,6 +154,17 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 14),
         ],
+        // Members that can't be reached yet: NAT, blocked UDP, relay quota
+        if (s.p2p.securityNotice == null)
+          if (s.p2p.connectivityNotice case final notice?) ...[
+            M3Banner(
+              tone: M3Tone.amber,
+              icon: Icons.wifi_tethering_error_rounded,
+              title: 'ยังเชื่อมต่อเพื่อนบางคนไม่ได้',
+              message: notice,
+            ),
+            const SizedBox(height: 14),
+          ],
         // Members that can't be reached because of the app version
         if (s.p2p.securityNotice case final notice?) ...[
           M3Banner(
@@ -459,7 +472,6 @@ class _MembersCard extends StatelessWidget {
     final net = services.network.currentNetwork;
     final members = [...services.network.members]
       ..sort((a, b) => (b.isOnline ? 1 : 0).compareTo(a.isOnline ? 1 : 0));
-    final peers = services.p2p.peers;
 
     return GlassPanel(
       child: Column(
@@ -505,7 +517,7 @@ class _MembersCard extends StatelessWidget {
                 child: _MemberRow(
                   member: m,
                   self: m.virtualIp == services.network.ownVirtualIp,
-                  direct: peers[m.virtualIp]?.isDirectConnected,
+                  path: services.p2p.pathOf(m.virtualIp),
                 ),
               ),
           if (members.length > 6)
@@ -521,9 +533,9 @@ class _MembersCard extends StatelessWidget {
 class _MemberRow extends StatelessWidget {
   final NetworkMember member;
   final bool self;
-  final bool? direct;
+  final P2pPath? path;
 
-  const _MemberRow({required this.member, required this.self, this.direct});
+  const _MemberRow({required this.member, required this.self, this.path});
 
   @override
   Widget build(BuildContext context) {
@@ -561,9 +573,8 @@ class _MemberRow extends StatelessWidget {
         children: [
           if (self)
             const M3Tag('เครื่องนี้', tone: M3Tone.cyan)
-          else if (m.isOnline && direct != null)
-            M3Tag(direct! ? 'P2P ตรง' : 'รีเลย์',
-                tone: direct! ? M3Tone.green : M3Tone.amber),
+          else if (m.isOnline && path != null)
+            PeerPathTag(path!),
           const SizedBox(width: 10),
           StatusOrb(
             color: m.isOnline ? p.green : p.text3,

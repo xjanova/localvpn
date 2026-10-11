@@ -14,6 +14,8 @@ import '../platform/platform_info.dart';
 import '../services/file_transfer_service.dart';
 import '../services/sound_service.dart';
 import '../widgets/m3/m3.dart';
+import '../services/p2p_service.dart';
+import '../widgets/peer_path_tag.dart';
 import 'shell/app_services.dart';
 import 'shell/app_shell.dart';
 
@@ -671,7 +673,7 @@ class _FileTransferScreenState extends State<FileTransferScreen> {
               for (final m in friends.take(maxShown))
                 _RecipientChip(
                   member: m,
-                  direct: s.p2p.peers[m.virtualIp]?.isDirectConnected,
+                  path: s.p2p.pathOf(m.virtualIp),
                 ),
               if (friends.length > maxShown)
                 Text('และอีก ${friends.length - maxShown} เครื่อง',
@@ -822,12 +824,16 @@ class _FileTransferScreenState extends State<FileTransferScreen> {
 
   /// Direct / relay tag from the P2P state of the machines we pull from.
   Widget? _routeTag(FileTransfer t) {
-    final states = [
-      for (final vip in t.activeSeeders) s.p2p.peers[vip]?.isDirectConnected,
-    ].whereType<bool>().toList();
-    if (states.isEmpty) return null;
-    final direct = states.where((d) => d).length;
-    final relay = states.length - direct;
+    final paths = [
+      for (final vip in t.activeSeeders) s.p2p.pathOf(vip),
+    ].whereType<P2pPath>().toList();
+    final direct = paths.where((p) => p == P2pPath.direct).length;
+    final relay = paths.where((p) => p == P2pPath.relay).length;
+    if (direct + relay == 0) {
+      return paths.isEmpty
+          ? null
+          : const M3Tag('กำลังเชื่อม', tone: M3Tone.neutral);
+    }
     if (relay == 0) {
       return const M3Tag('P2P ตรง', tone: M3Tone.green, icon: Icons.bolt_rounded);
     }
@@ -1390,14 +1396,14 @@ class _DashedBorderPainter extends CustomPainter {
 /// One online friend in the hero's "ผู้รับ" list.
 class _RecipientChip extends StatelessWidget {
   final NetworkMember member;
-  final bool? direct;
+  final P2pPath? path;
 
-  const _RecipientChip({required this.member, this.direct});
+  const _RecipientChip({required this.member, this.path});
 
   @override
   Widget build(BuildContext context) {
     final p = context.m3;
-    final d = direct;
+    final route = path;
     return Container(
       constraints: const BoxConstraints(maxWidth: 240),
       padding: const EdgeInsets.fromLTRB(6, 5, 10, 5),
@@ -1425,9 +1431,8 @@ class _RecipientChip extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 6),
-          if (d != null)
-            M3Tag(d ? 'ตรง' : 'รีเลย์',
-                tone: d ? M3Tone.green : M3Tone.amber)
+          if (route != null)
+            PeerPathTag(route, short: true)
           else
             StatusOrb(color: p.green, size: 7, pulse: false),
         ],

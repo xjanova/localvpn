@@ -54,3 +54,6 @@ release-output/
 
 # Raw generated art (ChatGPT sheets, ~30 MB) — app assets live in assets/m3
 /design/
+
+# lvnode build output
+tools/lvnode/build/

@@ -110,7 +110,12 @@ enum P2pPacketType {
   data(3),
 
   /// A file-transfer message (LVPN_FILE_…).
-  file(4);
+  file(4),
+
+  /// One piece of a file-transfer message too big for one datagram.
+  /// Payload: message id (4), index (2), count (2), bytes. Each piece is
+  /// sealed on its own, so each has its own counter and replay check.
+  fileFragment(5);
 
   const P2pPacketType(this.code);
   final int code;

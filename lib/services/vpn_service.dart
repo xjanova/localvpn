@@ -35,6 +35,7 @@ class VpnService extends ChangeNotifier {
   /// P2P connection stats
   int get directPeers => _p2pService?.directPeerCount ?? 0;
   int get relayPeers => _p2pService?.relayPeerCount ?? 0;
+  int get connectingPeers => _p2pService?.connectingPeerCount ?? 0;
   bool get hasP2p => _p2pService != null && _p2pService!.isActive;
 
   VpnService() {

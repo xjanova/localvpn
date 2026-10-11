@@ -4,6 +4,8 @@ import 'package:flutter_animate/flutter_animate.dart';
 
 import '../models/member.dart';
 import '../widgets/m3/m3.dart';
+import '../services/p2p_service.dart';
+import '../widgets/peer_path_tag.dart';
 import 'shell/app_services.dart';
 import 'shell/app_shell.dart';
 
@@ -118,8 +120,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                     width: w,
                     child: _DeviceCard(
                       member: others[i],
-                      direct: s.p2p.peers[others[i].virtualIp]
-                          ?.isDirectConnected,
+                      path: s.p2p.pathOf(others[i].virtualIp),
                     )
                         .animate()
                         .fadeIn(delay: (i * 50).ms, duration: 300.ms)
@@ -237,9 +238,9 @@ class _Readout extends StatelessWidget {
 
 class _DeviceCard extends StatelessWidget {
   final NetworkMember member;
-  final bool? direct;
+  final P2pPath? path;
 
-  const _DeviceCard({required this.member, this.direct});
+  const _DeviceCard({required this.member, this.path});
 
   @override
   Widget build(BuildContext context) {
@@ -283,9 +284,7 @@ class _DeviceCard extends StatelessWidget {
                   spacing: 6,
                   runSpacing: 6,
                   children: [
-                    if (m.isOnline && direct != null)
-                      M3Tag(direct! ? 'P2P ตรง' : 'ผ่านรีเลย์',
-                          tone: direct! ? M3Tone.green : M3Tone.amber),
+                    if (m.isOnline && path != null) PeerPathTag(path!),
                     if (!m.isOnline)
                       M3Tag(_lastSeen(m.lastHeartbeat),
                           tone: M3Tone.neutral),
