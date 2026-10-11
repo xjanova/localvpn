@@ -123,7 +123,9 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final w = MediaQuery.sizeOf(context).width;
     final shell = AppShellScope.of(context);
-    final showAdmin = isWindows && !shell.isElevated;
+    // With LocalVPNService the virtual LAN needs no admin rights; VPN and
+    // the boost say so on their own pages.
+    final showAdmin = isWindows && !shell.canRunLan;
 
     return M3PageBody(
       onRefresh: () async {

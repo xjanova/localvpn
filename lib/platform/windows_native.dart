@@ -74,6 +74,19 @@ class WindowsNative {
   static const MethodChannel _channel =
       MethodChannel('com.xjanova.localvpn/windows');
 
+  /// LocalVPNService is installed and listening: the virtual LAN adapter
+  /// works without administrator rights.
+  static Future<bool> serviceAvailable() async {
+    if (!isWindows) return false;
+    try {
+      return await _channel.invokeMethod<bool>('serviceAvailable') ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
   static Future<bool> isElevated() async {
     if (!isWindows) return true;
     try {

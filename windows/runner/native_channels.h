@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 
+#include "tunnel_backend.h"
 #include "vpn_tunnel.h"
 
 // Windows side of the app's own platform channels:
@@ -40,7 +41,9 @@ class NativeChannels {
   HWND window_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> vpn_channel_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> win_channel_;
-  VpnTunnel tunnel_;
+  // VpnTunnel (elevated) or ServiceTunnel (through LocalVPNService).
+  std::unique_ptr<TunnelBackend> tunnel_;
+  bool using_service_ = false;
   // Cleared in the destructor so late worker callbacks become no-ops.
   std::shared_ptr<std::atomic<bool>> alive_;
 };

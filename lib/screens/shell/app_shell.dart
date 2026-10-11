@@ -109,6 +109,13 @@ class AppShellState extends State<AppShell>
 
   ShellTab get tab => _tab;
   bool get isElevated => _elevated;
+
+  /// LocalVPNService runs the virtual LAN adapter for us.
+  bool _service = false;
+  bool get serviceAvailable => _service;
+
+  /// The virtual LAN can start without a UAC prompt.
+  bool get canRunLan => _elevated || _service;
   String get version => _version;
 
   @override
@@ -137,6 +144,9 @@ class AppShellState extends State<AppShell>
       trayManager.addListener(this);
       WindowsNative.isElevated().then((e) {
         if (mounted) setState(() => _elevated = e);
+      });
+      WindowsNative.serviceAvailable().then((v) {
+        if (mounted) setState(() => _service = v);
       });
       if (!widget.demo) WindowsTuneup.restoreLeftovers();
     }

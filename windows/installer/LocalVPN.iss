@@ -52,9 +52,25 @@ Name: "{autoprograms}\LocalVPN"; Filename: "{app}\LocalVPN.exe"
 Name: "{autodesktop}\LocalVPN"; Filename: "{app}\LocalVPN.exe"; Tasks: desktopicon
 
 [Run]
-; Also runs after a silent in-app update, keeping the installer's admin rights
-; so the virtual network card works straight away.
-Filename: "{app}\LocalVPN.exe"; Description: "{cm:LaunchProgram,LocalVPN}"; Flags: nowait postinstall runascurrentuser
+; The service runs the virtual network card for the app, which then starts
+; without a UAC prompt.
+Filename: "{app}\LocalVPNService.exe"; Parameters: "--install"; StatusMsg: "Installing the LocalVPN service..."; Flags: runhidden waituntilterminated
+; Also runs after a silent in-app update.
+Filename: "{app}\LocalVPN.exe"; Description: "{cm:LaunchProgram,LocalVPN}"; Flags: nowait postinstall runasoriginaluser
 
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/C taskkill /IM LocalVPN.exe /F"; Flags: runhidden; RunOnceId: "KillLocalVPN"
+Filename: "{app}\LocalVPNService.exe"; Parameters: "--uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveLocalVPNService"
+
+[Code]
+// An update replaces LocalVPNService.exe, which the running service keeps
+// locked: stop and remove it first; [Run] installs it again.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  if FileExists(ExpandConstant('{app}\LocalVPNService.exe')) then
+    Exec(ExpandConstant('{app}\LocalVPNService.exe'), '--uninstall', '',
+      SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;

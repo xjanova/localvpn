@@ -57,16 +57,21 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
+# The service that runs the virtual LAN adapter for the app; see
+# service/service_main.cpp.
+add_subdirectory("service")
+
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
 # wireguard_flutter_plus marks the exe requireAdministrator (its tunnel
-# service and our Wintun adapter both need admin), so released builds ask for
-# UAC at launch. -DLOCALVPN_AS_INVOKER=ON builds a copy that starts without a
-# prompt (screenshot runs, UI work); VPN features then offer "relaunch as admin".
-option(LOCALVPN_AS_INVOKER "Start without a UAC prompt (dev builds)" OFF)
+# service needs admin). We start without a UAC prompt instead: the virtual
+# LAN adapter runs in LocalVPNService (installed by the setup), and the VPN /
+# game boost pages offer "relaunch as admin" when they need it.
+# -DLOCALVPN_AS_INVOKER=OFF gives back the always-elevated exe.
+option(LOCALVPN_AS_INVOKER "Start without a UAC prompt" ON)
 if(LOCALVPN_AS_INVOKER)
   set_target_properties(${BINARY_NAME} PROPERTIES LINK_FLAGS
     "/MANIFESTUAC:\"level='asInvoker' uiAccess='false'\" /SUBSYSTEM:WINDOWS")
@@ -99,6 +104,8 @@ set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
 
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  COMPONENT Runtime)
+install(TARGETS LocalVPNService RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
 
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"

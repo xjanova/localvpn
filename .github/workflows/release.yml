@@ -135,7 +135,7 @@ jobs:
         shell: pwsh
         run: |
           $dir = "build\windows\x64\runner\Release"
-          foreach ($f in "LocalVPN.exe", "wintun.dll", "flutter_windows.dll", "msvcp140.dll", "vcruntime140.dll") {
+          foreach ($f in "LocalVPN.exe", "LocalVPNService.exe", "wintun.dll", "flutter_windows.dll", "msvcp140.dll", "vcruntime140.dll") {
             if (-not (Test-Path "$dir\$f")) { throw "missing $f in the Windows bundle" }
           }
           Get-ChildItem $dir | Select-Object Name, Length | Format-Table

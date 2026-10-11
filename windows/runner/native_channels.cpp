@@ -7,6 +7,8 @@
 
 #include "native_channels.h"
 
+#include "service_tunnel.h"
+
 #include <flutter/standard_method_codec.h>
 
 #include <chrono>
@@ -242,7 +244,9 @@ EncodableValue HardwareIds() {
 }  // namespace
 
 NativeChannels::NativeChannels(flutter::BinaryMessenger* messenger, HWND window)
-    : window_(window), alive_(std::make_shared<std::atomic<bool>>(true)) {
+    : window_(window),
+      tunnel_(std::make_unique<VpnTunnel>()),
+      alive_(std::make_shared<std::atomic<bool>>(true)) {
   const auto& codec = flutter::StandardMethodCodec::GetInstance();
   vpn_channel_ = std::make_unique<flutter::MethodChannel<EncodableValue>>(
       messenger, "com.xjanova.localvpn/vpn", &codec);
@@ -260,7 +264,7 @@ NativeChannels::NativeChannels(flutter::BinaryMessenger* messenger, HWND window)
 
 NativeChannels::~NativeChannels() {
   alive_->store(false);
-  tunnel_.Stop();
+  tunnel_->Stop();
   vpn_channel_->SetMethodCallHandler(nullptr);
   win_channel_->SetMethodCallHandler(nullptr);
 }
@@ -284,8 +288,8 @@ void NativeChannels::PostToPlatform(std::function<void()> fn) {
 }
 
 void NativeChannels::DeliverPackets() {
-  std::vector<VpnTunnel::Packet> packets;
-  tunnel_.TakePackets(&packets);
+  std::vector<TunnelBackend::Packet> packets;
+  tunnel_->TakePackets(&packets);
   if (packets.empty()) return;
   EncodableList list;
   list.reserve(packets.size());
@@ -305,17 +309,29 @@ void NativeChannels::OnVpnCall(const Call& call, Result result) {
       result->Error("INVALID_ARGS", "virtualIp and subnet are required");
       return;
     }
+    // Not elevated but the service is installed: the adapter runs there, so
+    // the app needs no UAC prompt. Elevated: in this process, as before.
+    const bool use_service = !IsProcessElevated() && ServiceTunnel::Available();
+    if (use_service != using_service_) {
+      tunnel_->Stop();
+      if (use_service) {
+        tunnel_ = std::make_unique<ServiceTunnel>();
+      } else {
+        tunnel_ = std::make_unique<VpnTunnel>();
+      }
+      using_service_ = use_service;
+    }
     HWND window = window_;
     auto alive = alive_;
     std::string code;
-    std::wstring error = tunnel_.Start(
+    std::wstring error = tunnel_->Start(
         ip, subnet,
         [window]() { PostMessage(window, kWmPackets, 0, 0); },
         [this, window, alive](const std::wstring& message) {
           std::string text = ToUtf8(message);
           PostRun(window, [this, alive, text]() {
             if (!alive->load()) return;
-            tunnel_.Stop();
+            tunnel_->Stop();
             vpn_channel_->InvokeMethod(
                 "onVpnError", std::make_unique<EncodableValue>(text));
           });
@@ -332,8 +348,8 @@ void NativeChannels::OnVpnCall(const Call& call, Result result) {
   }
 
   if (method == "stopVpn") {
-    bool was_running = tunnel_.IsRunning();
-    tunnel_.Stop();
+    bool was_running = tunnel_->IsRunning();
+    tunnel_->Stop();
     result->Success(EncodableValue(true));
     if (was_running) {
       vpn_channel_->InvokeMethod(
@@ -345,7 +361,7 @@ void NativeChannels::OnVpnCall(const Call& call, Result result) {
 
   if (method == "getVpnStatus") {
     result->Success(EncodableValue(
-        std::string(tunnel_.IsRunning() ? "connected" : "disconnected")));
+        std::string(tunnel_->IsRunning() ? "connected" : "disconnected")));
     return;
   }
 
@@ -355,7 +371,7 @@ void NativeChannels::OnVpnCall(const Call& call, Result result) {
       auto it = args->find(EncodableValue("data"));
       if (it != args->end()) {
         if (auto* data = std::get_if<std::vector<uint8_t>>(&it->second)) {
-          ok = tunnel_.Inject(data->data(), data->size());
+          ok = tunnel_->Inject(data->data(), data->size());
         }
       }
     }
@@ -365,13 +381,14 @@ void NativeChannels::OnVpnCall(const Call& call, Result result) {
 
   if (method == "getStats") {
     EncodableMap m;
-    m[EncodableValue("running")] = EncodableValue(tunnel_.IsRunning());
+    m[EncodableValue("running")] = EncodableValue(tunnel_->IsRunning());
+    m[EncodableValue("viaService")] = EncodableValue(using_service_);
     m[EncodableValue("packetsIn")] =
-        EncodableValue(static_cast<int64_t>(tunnel_.packets_in()));
+        EncodableValue(static_cast<int64_t>(tunnel_->packets_in()));
     m[EncodableValue("packetsOut")] =
-        EncodableValue(static_cast<int64_t>(tunnel_.packets_out()));
+        EncodableValue(static_cast<int64_t>(tunnel_->packets_out()));
     m[EncodableValue("packetsDropped")] =
-        EncodableValue(static_cast<int64_t>(tunnel_.packets_dropped()));
+        EncodableValue(static_cast<int64_t>(tunnel_->packets_dropped()));
     result->Success(EncodableValue(m));
     return;
   }
@@ -438,6 +455,13 @@ void NativeChannels::OnWindowsCall(const Call& call, Result result) {
 
   if (method == "hardwareIds") {
     result->Success(HardwareIds());
+    return;
+  }
+
+  // LocalVPNService is installed and listening: the virtual LAN works
+  // without administrator rights.
+  if (method == "serviceAvailable") {
+    result->Success(EncodableValue(ServiceTunnel::Available()));
     return;
   }
 

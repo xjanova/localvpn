@@ -11,6 +11,8 @@
 #include <thread>
 #include <vector>
 
+#include "tunnel_backend.h"
+
 // Virtual LAN adapter backed by Wintun (wintun.dll, shipped next to the exe).
 //
 // Start() creates (or reuses) the "LocalVPN" adapter, gives it the member's
@@ -20,17 +22,10 @@
 // packet received from a peer back into the adapter.
 //
 // Creating an adapter needs administrator rights.
-class VpnTunnel {
+class VpnTunnel : public TunnelBackend {
  public:
-  using Packet = std::vector<uint8_t>;
-  // Called on the reader thread whenever the queue goes from empty to
-  // non-empty. Must be cheap (post a window message).
-  using WakeCallback = std::function<void()>;
-  // Called on the reader thread when the session dies on its own.
-  using FailCallback = std::function<void(const std::wstring&)>;
-
   VpnTunnel();
-  ~VpnTunnel();
+  ~VpnTunnel() override;
 
   VpnTunnel(const VpnTunnel&) = delete;
   VpnTunnel& operator=(const VpnTunnel&) = delete;
@@ -39,19 +34,19 @@ class VpnTunnel {
   // |error_code| receives a short machine-readable code.
   std::wstring Start(const std::string& virtual_ip, const std::string& subnet,
                      WakeCallback wake, FailCallback fail,
-                     std::string* error_code);
-  void Stop();
-  bool IsRunning() const { return running_.load(); }
+                     std::string* error_code) override;
+  void Stop() override;
+  bool IsRunning() const override { return running_.load(); }
 
   // Thread-safe.
-  bool Inject(const uint8_t* data, size_t size);
+  bool Inject(const uint8_t* data, size_t size) override;
 
   // Moves every queued packet into |out|. Thread-safe.
-  void TakePackets(std::vector<Packet>* out);
+  void TakePackets(std::vector<Packet>* out) override;
 
-  uint64_t packets_in() const { return packets_in_.load(); }
-  uint64_t packets_out() const { return packets_out_.load(); }
-  uint64_t packets_dropped() const { return packets_dropped_.load(); }
+  uint64_t packets_in() const override { return packets_in_.load(); }
+  uint64_t packets_out() const override { return packets_out_.load(); }
+  uint64_t packets_dropped() const override { return packets_dropped_.load(); }
 
  private:
   bool LoadWintun(std::wstring* error);

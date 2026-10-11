@@ -10,6 +10,7 @@ add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "main.cpp"
   "native_channels.cpp"
+  "service_tunnel.cpp"
   "utils.cpp"
   "vpn_tunnel.cpp"
   "win32_window.cpp"
