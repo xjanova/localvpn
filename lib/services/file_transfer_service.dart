@@ -454,7 +454,7 @@ class FileTransferService extends ChangeNotifier {
   /// Send a chunk request to a specific peer
   void _sendChunkRequest(String peerVip, String fileHash, int chunkIndex) {
     final msg = utf8.encode('LVPN_FILE_CHUNK_REQ:$fileHash|$chunkIndex');
-    _p2pService?.sendToPeer(peerVip, Uint8List.fromList(msg));
+    _p2pService?.sendFileMessage(peerVip, Uint8List.fromList(msg));
   }
 
   /// Cancel a transfer
@@ -470,7 +470,7 @@ class FileTransferService extends ChangeNotifier {
     // Notify seeders
     for (final vip in transfer.activeSeeders) {
       final msg = utf8.encode('LVPN_FILE_CANCEL:$fileHash');
-      _p2pService?.sendToPeer(vip, Uint8List.fromList(msg));
+      _p2pService?.sendFileMessage(vip, Uint8List.fromList(msg));
     }
     notifyListeners();
   }
@@ -536,7 +536,7 @@ class FileTransferService extends ChangeNotifier {
       final chunkB64 = base64Encode(chunk);
       final msg =
           utf8.encode('LVPN_FILE_CHUNK_RES:$fileHash|$chunkIndex|$chunkB64');
-      _p2pService?.sendToPeer(targetVip, Uint8List.fromList(msg));
+      _p2pService?.sendFileMessage(targetVip, Uint8List.fromList(msg));
 
       // Track upload
       final uploadTransfer = _transfers

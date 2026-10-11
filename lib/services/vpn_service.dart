@@ -210,6 +210,12 @@ class VpnService extends ChangeNotifier {
 
   /// Handle incoming P2P data → inject into TUN
   void _onP2pDataReceived(String virtualIp, Uint8List data) {
+    // P2P authenticated the sender's virtual IP: a member may only inject
+    // packets from its own address, not pose as another member.
+    if (data.length < 20 ||
+        '${data[12]}.${data[13]}.${data[14]}.${data[15]}' != virtualIp) {
+      return;
+    }
     try {
       _channel.invokeMethod('injectPacket', {'data': data});
     } on MissingPluginException {

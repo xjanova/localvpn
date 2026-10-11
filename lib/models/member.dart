@@ -10,6 +10,13 @@ class NetworkMember {
   final DateTime? lastHeartbeat;
   final String? machineId;
 
+  /// Public key for end-to-end encryption, `v<version>:<base64>`.
+  final String? p2pKey;
+
+  /// Whether the server sent the `p2p_key` field at all. A server that
+  /// stores keys sends it as null for members whose app predates them.
+  final bool reportsP2pKey;
+
   const NetworkMember({
     this.id,
     required this.displayName,
@@ -21,6 +28,8 @@ class NetworkMember {
     this.isOnline = false,
     this.lastHeartbeat,
     this.machineId,
+    this.p2pKey,
+    this.reportsP2pKey = false,
   });
 
   /// Whether this member is acting as a VPN gateway for the network
@@ -51,6 +60,8 @@ class NetworkMember {
               ? DateTime.tryParse(json['last_heartbeat_at'] as String)
               : null),
       machineId: json['machine_id'] as String?,
+      p2pKey: json['p2p_key'] as String?,
+      reportsP2pKey: json.containsKey('p2p_key'),
     );
   }
 
@@ -67,6 +78,7 @@ class NetworkMember {
       if (lastHeartbeat != null)
         'last_heartbeat': lastHeartbeat!.toIso8601String(),
       if (machineId != null) 'machine_id': machineId,
+      if (reportsP2pKey) 'p2p_key': p2pKey,
     };
   }
 }

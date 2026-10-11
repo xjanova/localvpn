@@ -87,6 +87,12 @@ class NetworkService extends ChangeNotifier {
     return _members.where((m) => m.isVpnGateway).firstOrNull;
   }
 
+  /// Advertise this device's public key so members can encrypt to it.
+  Future<void> _addP2pKey(Map<String, dynamic> body) async {
+    final advert = await _p2pService?.keyAdvert();
+    if (advert != null) body['p2p_key'] = advert;
+  }
+
   Map<String, String> get _headers {
     final h = <String, String>{
       'Content-Type': 'application/json',
@@ -165,6 +171,8 @@ class NetworkService extends ChangeNotifier {
         body['max_members'] = maxMembers;
       }
 
+      await _addP2pKey(body);
+
       final response = await http
           .post(
             Uri.parse('$_baseUrl/networks'),
@@ -230,6 +238,8 @@ class NetworkService extends ChangeNotifier {
         body['password'] = passwordHash;
       }
 
+      await _addP2pKey(body);
+
       final response = await http
           .post(
             Uri.parse('$_baseUrl/networks/join'),
@@ -293,6 +303,8 @@ class NetworkService extends ChangeNotifier {
       if (passwordHash != null && passwordHash.isNotEmpty) {
         body['password'] = passwordHash;
       }
+
+      await _addP2pKey(body);
 
       final response = await http
           .post(
@@ -502,6 +514,7 @@ class NetworkService extends ChangeNotifier {
           body['public_port'] = _p2pService!.publicPort;
         }
       }
+      await _addP2pKey(body);
 
       // VPN gateway info — tells other members this host is routing via VPN
       if (_vpnGatewayCountry != null) {
