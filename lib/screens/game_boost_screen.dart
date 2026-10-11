@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/proxy_server.dart';
 import '../platform/platform_info.dart';
@@ -60,9 +61,46 @@ class _GameBoostScreenState extends State<GameBoostScreen> {
       (s.proxy.status == VpnProxyStatus.connected ||
           s.proxy.status == VpnProxyStatus.connecting);
 
+  /// Boosting is PRO (owner's plan); measuring stays free for everyone.
+  Future<bool> _requirePro() async {
+    final lic = s.license.state;
+    if (lic.isPaid) return true;
+    final trial = lic.trialAvailable;
+    final go = await m3Confirm(
+      context,
+      icon3d: M3Icons.crown,
+      title: 'โหมดลดปิงเป็นฟีเจอร์ PRO',
+      message: trial
+          ? 'เครื่องนี้ยังทดลอง PRO ได้ฟรี 30 วัน เริ่มทดลองแล้วเปิดโหมดลดปิงได้ทันที'
+          : 'วัดปิงได้ฟรีตลอด ส่วนการสลับเส้นทางและการปรับแต่ง Windows '
+              'ใช้ได้ในแพ็กเกจ PRO (เดือนละ 199 บาท)',
+      confirmLabel: trial ? 'ทดลอง PRO ฟรี 30 วัน' : 'ดูแพ็กเกจ PRO',
+    );
+    if (!go || !mounted) return false;
+    if (trial) {
+      final ok = await s.license.startDemo();
+      if (!mounted) return false;
+      if (!ok) {
+        m3Toast(context,
+            s.license.state.errorMessage ?? 'เริ่มทดลองใช้ไม่สำเร็จ',
+            tone: M3Tone.red);
+        s.license.clearError();
+      }
+      return ok;
+    }
+    final uri = Uri.tryParse(s.license.getPurchaseUrl('monthly'));
+    if (uri != null) {
+      try {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } catch (_) {}
+    }
+    return false;
+  }
+
   Future<void> _start([ServerCountry? relay]) async {
     final target = relay ?? b.recommendation?.relay;
     if (target == null) return;
+    if (!await _requirePro() || !mounted) return;
     if (relay != null && b.directIsBest) {
       final ok = await m3Confirm(
         context,
@@ -106,6 +144,8 @@ class _GameBoostScreenState extends State<GameBoostScreen> {
   Future<void> _toggleNagle(bool off) async {
     final guid = b.adapter?.guid;
     if (guid == null) return;
+    // Turning it back on is always allowed.
+    if (off && (!await _requirePro() || !mounted)) return;
     setState(() => _nagleBusy = true);
     final r = off
         ? await WindowsTuneup.disableNagle(guid)
@@ -677,6 +717,18 @@ class _TargetCard extends StatelessWidget {
                 ),
             ],
           ),
+          if (b.regionProfiles.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            M3Inset(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+              child: Text(
+                'ส่งผ่านเซิร์ฟเวอร์เฉพาะทราฟฟิกของ '
+                '${b.regionProfiles.map((p) => p.name).join(', ')} '
+                '— เว็บ วิดีโอ และดาวน์โหลดยังใช้เน็ตของคุณตามปกติ',
+                style: M3Text.sub(context).copyWith(fontSize: 12.5),
+              ),
+            ),
+          ],
           const SizedBox(height: 16),
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,

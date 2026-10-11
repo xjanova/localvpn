@@ -24,6 +24,11 @@ enum WgRouting {
   /// a /0 route turns on WireGuard's "block untunneled traffic" firewall,
   /// which would also cut the home LAN and the LocalVPN virtual LAN.
   internetOnly,
+
+  /// Only the given ranges (a game's servers): everything else keeps the
+  /// player's own line. This is what the game boost uses; a game exit
+  /// forwards nothing else anyway, and it keeps the relay's bill small.
+  games,
 }
 
 class VpnProxyService extends ChangeNotifier {
@@ -120,6 +125,9 @@ class VpnProxyService extends ChangeNotifier {
 
   /// Hosts kept outside the tunnel for the current connection (endpoint).
   List<String> _bypassHosts = const [];
+
+  /// The ranges sent through the tunnel in [WgRouting.games].
+  List<String> _routeCidrs = const [];
 
   void configure({required String deviceId, String? licenseKey}) {
     _deviceId = deviceId;
@@ -594,9 +602,13 @@ class VpnProxyService extends ChangeNotifier {
   /// [routing] defaults to [WgRouting.internetOnly] on Windows and to the
   /// server's routes elsewhere.
   Future<bool> connectToCountry(ServerCountry country,
-      {WgRouting? routing}) async {
+      {WgRouting? routing, List<String> routes = const []}) async {
     _routing = routing ??
         (Platform.isWindows ? WgRouting.internetOnly : WgRouting.server);
+    _routeCidrs = List.unmodifiable(routes);
+    if (_routing == WgRouting.games && _routeCidrs.isEmpty) {
+      _routing = WgRouting.internetOnly;
+    }
     if (country.servers.isEmpty) {
       _error = 'ประเทศนี้ยังไม่มีเซิร์ฟเวอร์ที่ใช้ได้';
       notifyListeners();
@@ -816,11 +828,22 @@ class VpnProxyService extends ChangeNotifier {
   }
 
   /// Build WireGuard config string from parts + private key
+  @visibleForTesting
+  String debugWgConfig(Map<String, dynamic> parts,
+      {required WgRouting routing, List<String> routes = const []}) {
+    _routing = routing;
+    _routeCidrs = routes;
+    return _buildWgConfig(parts);
+  }
+
   String _buildWgConfig(Map<String, dynamic> parts) {
+    // A game route keeps the player's own DNS: game servers are picked by
+    // where the resolver is, and nothing else goes through the tunnel.
+    final dns = _routing == WgRouting.games ? '' : 'DNS = ${parts['dns']}\n';
     return '[Interface]\n'
         'PrivateKey = $_privateKey\n'
         'Address = ${parts['address']}\n'
-        'DNS = ${parts['dns']}\n'
+        '$dns'
         '\n'
         '[Peer]\n'
         'PublicKey = ${parts['server_pub_key']}\n'
@@ -830,6 +853,7 @@ class VpnProxyService extends ChangeNotifier {
   }
 
   String _allowedIps(Map<String, dynamic> parts) {
+    if (_routing == WgRouting.games) return _routeCidrs.join(', ');
     if (_routing != WgRouting.internetOnly) {
       return parts['allowed_ips']?.toString() ?? '0.0.0.0/0';
     }

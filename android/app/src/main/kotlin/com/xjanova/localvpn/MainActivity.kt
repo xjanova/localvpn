@@ -2,17 +2,21 @@ package com.xjanova.localvpn
 
 import android.app.Activity
 import android.content.Intent
+import android.media.MediaDrm
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.security.MessageDigest
+import java.util.UUID
 
 class MainActivity : FlutterActivity(), LocalVpnService.Listener {
     companion object {
@@ -21,6 +25,7 @@ class MainActivity : FlutterActivity(), LocalVpnService.Listener {
 
     private val VPN_CHANNEL = "com.xjanova.localvpn/vpn"
     private val INSTALL_CHANNEL = "com.xjanova.localvpn/installer"
+    private val DEVICE_CHANNEL = "com.xjanova.localvpn/device"
     private val VPN_REQUEST_CODE = 100
 
     private var pendingResult: MethodChannel.Result? = null
@@ -57,6 +62,40 @@ class MainActivity : FlutterActivity(), LocalVpnService.Listener {
                         result.error("INSTALL_ERROR", e.message, null)
                     }
                 }
+                else -> result.notImplemented()
+            }
+        }
+
+        // Device identity for the licence: ANDROID_ID (per signing key, survives a
+        // reinstall) and the Widevine device id (survives a factory reset of the
+        // app data). device_info_plus has neither: its "id" is Build.ID, the same on
+        // every phone of one model and firmware.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getIds" -> Thread {
+                    val ids = HashMap<String, String>()
+                    try {
+                        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+                            ?.takeIf { it.isNotBlank() && it != "9774d56d682e549c" }
+                            ?.let { ids["androidId"] = it }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "ANDROID_ID unavailable: ${e.message}")
+                    }
+                    var drm: MediaDrm? = null
+                    try {
+                        drm = MediaDrm(UUID.fromString("edef8ba9-79d6-4ace-a3c8-27dcd51d21ed")) // Widevine
+                        val raw = drm.getPropertyByteArray(MediaDrm.PROPERTY_DEVICE_UNIQUE_ID)
+                        val digest = MessageDigest.getInstance("SHA-256").digest(raw)
+                        ids["drmId"] = digest.joinToString("") { "%02x".format(it) }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Widevine id unavailable: ${e.message}")
+                    } finally {
+                        try {
+                            if (Build.VERSION.SDK_INT >= 28) drm?.close() else @Suppress("DEPRECATION") drm?.release()
+                        } catch (_: Exception) {}
+                    }
+                    mainHandler.post { result.success(ids) }
+                }.start()
                 else -> result.notImplemented()
             }
         }

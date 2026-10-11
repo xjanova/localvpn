@@ -110,6 +110,10 @@ class _SplashScreenState extends State<SplashScreen> {
   final LicenseService _licenseService = LicenseService();
   String _status = 'กำลังเตรียมระบบ…';
 
+  /// First launch without internet: the device must register once.
+  bool _needsNetwork = false;
+  bool _retrying = false;
+
   @override
   void initState() {
     super.initState();
@@ -132,12 +136,30 @@ class _SplashScreenState extends State<SplashScreen> {
     SoundService().play(SfxType.boot);
     await minSplash;
     if (!mounted) return;
+    _enterOrWait();
+  }
 
-    // Free model: always allow entry. If no license found, set free status.
-    if (!_licenseService.state.isValid) {
-      _licenseService.setFreeMode();
+  Future<void> _retry() async {
+    if (_retrying) return;
+    setState(() {
+      _retrying = true;
+      _status = 'กำลังลงทะเบียนเครื่อง…';
+    });
+    await _licenseService.retryRegistration();
+    if (!mounted) return;
+    setState(() => _retrying = false);
+    _enterOrWait();
+  }
+
+  void _enterOrWait() {
+    if (_licenseService.needsOnlineRegistration) {
+      setState(() {
+        _needsNetwork = true;
+        _status = _licenseService.state.errorMessage ??
+            'เชื่อมต่ออินเทอร์เน็ตเพื่อลงทะเบียนเครื่องครั้งแรก';
+      });
+      return;
     }
-
     Navigator.of(context).pushReplacement(
       M3PageRoute(
         builder: (_) => AppShell(licenseService: _licenseService),
@@ -186,12 +208,22 @@ class _SplashScreenState extends State<SplashScreen> {
                     .animate()
                     .fadeIn(delay: 350.ms, duration: 500.ms),
                 const SizedBox(height: 34),
-                const SizedBox(
-                  width: 240,
-                  child: M3ProgressBar(height: 8),
-                ),
+                if (!_needsNetwork || _retrying)
+                  const SizedBox(
+                    width: 240,
+                    child: M3ProgressBar(height: 8),
+                  ),
                 const SizedBox(height: 12),
-                Text(_status, style: M3Text.sub(context)),
+                Text(_status,
+                    textAlign: TextAlign.center, style: M3Text.sub(context)),
+                if (_needsNetwork && !_retrying) ...[
+                  const SizedBox(height: 16),
+                  GlossButton(
+                    label: 'ลองอีกครั้ง',
+                    icon: Icons.refresh_rounded,
+                    onPressed: _retry,
+                  ),
+                ],
               ],
             ),
           ),

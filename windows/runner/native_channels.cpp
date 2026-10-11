@@ -182,6 +182,63 @@ EncodableValue ActiveAdapter() {
   return EncodableValue();
 }
 
+// The n-th (1-based) string of an SMBIOS structure, "" when absent.
+std::string SmbiosString(const BYTE* structure, const BYTE* end, BYTE index) {
+  if (index == 0) return "";
+  const char* s = reinterpret_cast<const char*>(structure + structure[1]);
+  for (BYTE i = 1; reinterpret_cast<const BYTE*>(s) < end && *s; ++i) {
+    size_t len = strnlen(s, end - reinterpret_cast<const BYTE*>(s));
+    if (i == index) return std::string(s, len);
+    s += len + 1;
+  }
+  return "";
+}
+
+// Machine identity from the SMBIOS tables: system UUID (type 1) and the
+// system, board and chassis serials. Survives a Windows reinstall, which
+// MachineGuid does not; that is what binds a trial to the hardware. The app
+// filters out the placeholder values many boards ship with.
+EncodableValue HardwareIds() {
+  const DWORD sig = 'RSMB';
+  DWORD size = GetSystemFirmwareTable(sig, 0, nullptr, 0);
+  if (size < 8) return EncodableValue();
+  std::vector<BYTE> buffer(size);
+  if (GetSystemFirmwareTable(sig, 0, buffer.data(), size) != size) {
+    return EncodableValue();
+  }
+  DWORD length = *reinterpret_cast<const DWORD*>(buffer.data() + 4);
+  if (length > size - 8) length = size - 8;
+  const BYTE* p = buffer.data() + 8;
+  const BYTE* end = p + length;
+
+  EncodableMap m;
+  while (p + 4 <= end) {
+    const BYTE type = p[0];
+    const BYTE header = p[1];
+    if (header < 4 || p + header > end) break;
+    if (type == 1 && header >= 0x19) {
+      char hex[33] = {0};
+      for (int i = 0; i < 16; ++i) sprintf_s(hex + i * 2, 3, "%02x", p[8 + i]);
+      m[EncodableValue("uuid")] = EncodableValue(std::string(hex));
+      m[EncodableValue("systemSerial")] =
+          EncodableValue(SmbiosString(p, end, p[7]));
+    } else if (type == 2 && header >= 8) {
+      m[EncodableValue("boardSerial")] =
+          EncodableValue(SmbiosString(p, end, p[7]));
+    } else if (type == 3 && header >= 8) {
+      m[EncodableValue("chassisSerial")] =
+          EncodableValue(SmbiosString(p, end, p[7]));
+    } else if (type == 127) {
+      break;  // end of table
+    }
+    // Skip the formatted area, then the string set (ends with two NULs).
+    const BYTE* next = p + header;
+    while (next + 1 < end && !(next[0] == 0 && next[1] == 0)) ++next;
+    p = next + 2;
+  }
+  return EncodableValue(m);
+}
+
 }  // namespace
 
 NativeChannels::NativeChannels(flutter::BinaryMessenger* messenger, HWND window)
@@ -376,6 +433,11 @@ void NativeChannels::OnWindowsCall(const Call& call, Result result) {
 
   if (method == "getActiveAdapter") {
     result->Success(ActiveAdapter());
+    return;
+  }
+
+  if (method == "hardwareIds") {
+    result->Success(HardwareIds());
     return;
   }
 

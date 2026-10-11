@@ -129,6 +129,24 @@ class WindowsNative {
     }
   }
 
+  /// SMBIOS identity: `uuid`, `systemSerial`, `boardSerial`, `chassisSerial`
+  /// (raw; the caller drops placeholder values). Empty when unreadable.
+  static Future<Map<String, String>> hardwareIds() async {
+    if (!isWindows) return const {};
+    try {
+      final m =
+          await _channel.invokeMethod<Map<dynamic, dynamic>>('hardwareIds');
+      return {
+        for (final e in (m ?? const {}).entries)
+          if (e.value is String) '${e.key}': e.value as String,
+      };
+    } on PlatformException {
+      return const {};
+    } on MissingPluginException {
+      return const {};
+    }
+  }
+
   static Future<ActiveAdapter?> activeAdapter() async {
     if (!isWindows) return null;
     try {

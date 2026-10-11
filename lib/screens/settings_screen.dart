@@ -13,6 +13,7 @@ import '../widgets/m3/m3.dart';
 import 'license_gate_screen.dart';
 import 'shell/app_services.dart';
 import 'shell/app_shell.dart';
+import 'license_actions.dart';
 
 /// "ตั้งค่า" — licence (PRO badge, key, buy, trial, deactivate), program
 /// updates, the night/sky theme picker, Windows admin + tray notes,
@@ -101,11 +102,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     FocusScope.of(context).unfocus();
     setState(() => _activating = true);
-    final ok = await s.license.activate(key);
+    final ok = await activateLicense(context, s.license, key);
     final err = s.license.state.errorMessage;
-    if (!ok) s.license.clearError();
+    if (ok != true) s.license.clearError();
     if (!mounted) return;
     setState(() => _activating = false);
+    if (ok == null) return; // kept the key on its other devices
     if (ok) {
       _sound.play(SfxType.success);
       HapticFeedback.heavyImpact();
@@ -124,8 +126,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final go = await m3Confirm(
       context,
       icon3d: M3Icons.crown,
-      title: 'เริ่มทดลองใช้ PRO?',
-      message: 'ระยะทดลองจะเริ่มนับทันทีหลังกดยืนยัน',
+      title: 'เริ่มทดลองใช้ PRO 30 วัน?',
+      message: 'ทดลองได้ครั้งเดียวต่อเครื่อง เริ่มนับทันทีหลังกดยืนยัน '
+          'หมดแล้วใช้แบบฟรีต่อได้',
       confirmLabel: 'เริ่มทดลองใช้',
     );
     if (!go || !mounted) return;
@@ -140,9 +143,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _sound.play(SfxType.success);
       m3Toast(
         context,
-        st.demoMinutesLeft == null
+        st.daysLeft == null
             ? 'เริ่มทดลองใช้ PRO แล้ว'
-            : 'เริ่มทดลองใช้ PRO แล้ว — เหลือ ${st.demoMinutesLeft} นาที',
+            : 'เริ่มทดลองใช้ PRO แล้ว — ${daysLeftLabel(st.daysLeft)}',
         tone: M3Tone.green,
       );
     } else {
@@ -159,8 +162,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context,
       icon3d: M3Icons.lock,
       title: 'ยกเลิก License?',
-      message: 'ต้องการยกเลิก License บนเครื่องนี้ใช่หรือไม่? '
-          'คุณจะกลับไปใช้แพ็กเกจฟรี (จำกัด 5 คน/ห้อง)',
+      message: 'คืนที่ของเครื่องนี้ใน License เพื่อนำไปใช้กับเครื่องอื่น '
+          'เครื่องนี้จะกลับไปใช้แพ็กเกจฟรี (จำกัด 5 คน/ห้อง)',
       confirmLabel: 'ยกเลิก License',
       cancelLabel: 'เก็บไว้',
       destructive: true,
@@ -426,7 +429,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _ => 'คุณใช้แพ็กเกจฟรีอยู่',
     };
     final detail = paid
-        ? 'สมาชิกสูงสุด 50 คน/ห้อง · VPN ทุกประเทศ · Cloud Sync'
+        ? 'สมาชิกสูงสุด 50 คน/ห้อง · VPN ทุกประเทศ · ลดปิงเกม'
         : expired
             ? 'ต่ออายุ หรือกรอก License Key ใหม่เพื่อใช้ฟีเจอร์ PRO ต่อ'
             : 'สมาชิกสูงสุด ${lic.maxNetworkMembers} คน/ห้อง — อัปเกรดเป็น PRO '
@@ -476,8 +479,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           M3KeyValue('สมาชิกสูงสุด', '${lic.maxNetworkMembers} คน/ห้อง'),
           if (lic.expiresAt != null)
             M3KeyValue('หมดอายุ', _date(lic.expiresAt!)),
-          if (lic.status == LicenseStatus.trial && lic.demoMinutesLeft != null)
-            M3KeyValue('เวลาที่เหลือ', '${lic.demoMinutesLeft} นาที'),
+          if (lic.status == LicenseStatus.trial && lic.daysLeft != null)
+            M3KeyValue('เวลาที่เหลือ', '${lic.daysLeft} วัน'),
           if (paid && key != null && key.isNotEmpty)
             M3KeyValue('License Key', _maskKey(key), mono: true),
           const SizedBox(height: 6),
@@ -552,9 +555,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             variant: GlossVariant.glass,
             onPressed: _licenseBusy ? null : _openGate,
           ),
-        if (lic.isFree)
+        if (lic.isFree && lic.trialAvailable)
           GlossButton(
-            label: 'ทดลองใช้ PRO ฟรี',
+            label: 'ทดลอง PRO ฟรี 30 วัน',
             icon: Icons.timer_outlined,
             variant: GlossVariant.glass,
             loading: _demoBusy,
@@ -989,9 +992,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       LicenseStatus.trial => (
           ProBadgeKind.pro,
           'PRO',
-          lic.demoMinutesLeft == null
+          lic.daysLeft == null
               ? 'ทดลองใช้'
-              : 'ทดลอง · เหลือ ${lic.demoMinutesLeft} นาที',
+              : 'ทดลอง · ${daysLeftLabel(lic.daysLeft)}',
         ),
       LicenseStatus.expired => (ProBadgeKind.none, 'PRO', 'หมดอายุ'),
       LicenseStatus.checking => (ProBadgeKind.free, 'FREE', 'กำลังตรวจสอบ'),
@@ -1001,6 +1004,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 String _daysLeft(LicenseState lic) {
   final e = lic.expiresAt;
   if (e == null) return lic.typeDisplayName;
+  if (lic.daysLeft != null) return daysLeftLabel(lic.daysLeft);
   final days = e.difference(DateTime.now()).inDays;
   return days >= 0 ? 'เหลือ $days วัน' : 'หมดอายุ';
 }

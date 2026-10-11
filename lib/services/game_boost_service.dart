@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -42,6 +43,62 @@ class BoostGame {
   final String regionId;
   final String note;
   const BoostGame(this.name, this.regionId, this.note);
+}
+
+/// A game whose server ranges the admin listed (xmanstudio: LocalVPN →
+/// Fleet → game profiles). Only these ranges go through a game exit.
+class GameProfile {
+  const GameProfile({
+    required this.slug,
+    required this.name,
+    required this.region,
+    required this.cidrs,
+    this.probe,
+  });
+
+  final String slug;
+  final String name;
+
+  /// Region id or country code (sg, SG, jp …) — matched to [BoostRegion].
+  final String region;
+  final List<String> cidrs;
+
+  /// host:port inside those ranges that answers TCP, to measure through
+  /// the relay (a game exit forwards nothing else).
+  final String? probe;
+
+  static final RegExp _cidr = RegExp(
+      r'^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}/([0-9]|[12]\d|3[0-2])$');
+
+  static GameProfile? fromJson(Object? j) {
+    if (j is! Map) return null;
+    final slug = j['slug'];
+    final name = j['name'];
+    final cidrs = [
+      for (final c in j['cidrs'] as List? ?? const [])
+        if (c is String && _cidr.hasMatch(c.trim())) c.trim(),
+    ];
+    if (slug is! String || name is! String || cidrs.isEmpty) return null;
+    final probe = j['probe_host'] ?? j['probe'];
+    return GameProfile(
+      slug: slug,
+      name: name,
+      region: '${j['region'] ?? ''}'.toLowerCase(),
+      cidrs: cidrs,
+      probe: probe is String && probe.isNotEmpty ? probe : null,
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+        'slug': slug,
+        'name': name,
+        'region': region,
+        'cidrs': cidrs,
+        'probe_host': probe,
+      };
+
+  bool inRegion(BoostRegion r) =>
+      region == r.id || region == r.countryCode.toLowerCase();
 }
 
 /// One measured path to the target region.
@@ -188,6 +245,9 @@ class GameBoostService extends ChangeNotifier {
     BoostGame('เกมเซิร์ฟยุโรป (EU)', 'de', 'EU Central'),
   ];
 
+  static const _profilesUrl =
+      'https://xman4289.com/api/v1/localvpn/game-profiles';
+  static const _prefProfiles = 'boost_game_profiles';
   static const _prefRegion = 'boost_region';
   static const _prefCustomHost = 'boost_custom_host';
   static const _prefWifiTweak = 'boost_tweak_wifi';
@@ -195,6 +255,12 @@ class GameBoostService extends ChangeNotifier {
 
   BoostRegion _region = regions.first;
   BoostRegion get region => _region;
+
+  List<GameProfile> _profiles = const [];
+
+  /// Games of the selected region that a game exit carries.
+  List<GameProfile> get regionProfiles =>
+      [for (final p in _profiles) if (p.inRegion(_region)) p];
 
   /// Optional host:port the player knows their game server is on.
   String? _customHost;
@@ -281,9 +347,62 @@ class GameBoostService extends ChangeNotifier {
       _customHost = prefs.getString(_prefCustomHost);
       wifiTweak = prefs.getBool(_prefWifiTweak) ?? true;
       powerTweak = prefs.getBool(_prefPowerTweak) ?? true;
+      _profiles = _parseProfiles(prefs.getString(_prefProfiles));
     } catch (_) {}
     _adapter = await WindowsNative.activeAdapter();
     _notify();
+    unawaited(refreshProfiles());
+  }
+
+  static List<GameProfile> _parseProfiles(String? raw) {
+    if (raw == null) return const [];
+    try {
+      final j = jsonDecode(raw);
+      final list = j is Map ? j['profiles'] : j;
+      return [
+        for (final p in list as List? ?? const [])
+          if (GameProfile.fromJson(p) case final g?) g,
+      ];
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// The admin's game list; kept for offline use.
+  Future<void> refreshProfiles() async {
+    try {
+      final r = await http
+          .get(Uri.parse(_profilesUrl),
+              headers: const {'Accept': 'application/json'})
+          .timeout(const Duration(seconds: 10));
+      if (r.statusCode != 200) return;
+      final profiles = _parseProfiles(r.body);
+      _profiles = profiles;
+      final prefs = await AppStore.instance();
+      await prefs.setString(_prefProfiles,
+          jsonEncode({'profiles': [for (final p in profiles) p.toJson()]}));
+      _notify();
+    } catch (e) {
+      debugPrint('Game profiles not refreshed: $e');
+    }
+  }
+
+  /// What goes through the tunnel: the region's game ranges and the probe
+  /// target, or null when the admin listed no game for it (then the old
+  /// "all internet" route, which only a full-VPN server accepts).
+  Future<List<String>?> _routes() async {
+    final games = regionProfiles;
+    if (games.isEmpty) return null;
+    final routes = <String>{for (final g in games) ...g.cidrs};
+    final (host, _) = _target;
+    try {
+      final ip = InternetAddress.tryParse(host) ??
+          (await InternetAddress.lookup(host, type: InternetAddressType.IPv4)
+                  .timeout(const Duration(seconds: 4)))
+              .first;
+      if (ip.type == InternetAddressType.IPv4) routes.add('${ip.address}/32');
+    } catch (_) {}
+    return routes.toList();
   }
 
   Future<void> setRegion(BoostRegion r) async {
@@ -330,10 +449,13 @@ class GameBoostService extends ChangeNotifier {
   }
 
   (String, int) get _target {
-    final c = _customHost;
+    final c = _customHost ??
+        regionProfiles.map((p) => p.probe).whereType<String>().firstOrNull;
     if (c != null) {
       final i = c.lastIndexOf(':');
-      return (c.substring(0, i), int.parse(c.substring(i + 1)));
+      final port = i > 0 ? int.tryParse(c.substring(i + 1)) : null;
+      if (port != null) return (c.substring(0, i), port);
+      return (c, 443);
     }
     return (_region.host, _region.port);
   }
@@ -480,8 +602,12 @@ class GameBoostService extends ChangeNotifier {
 
     proxy.addListener(listener);
     try {
-      final started =
-          await proxy.connectToCountry(c, routing: WgRouting.internetOnly);
+      final routes = await _routes();
+      final started = await proxy.connectToCountry(
+        c,
+        routing: routes == null ? WgRouting.internetOnly : WgRouting.games,
+        routes: routes ?? const [],
+      );
       if (!started && !done.isCompleted) {
         done.complete(proxy.error ?? 'เชื่อมต่อรีเลย์ไม่สำเร็จ');
       }

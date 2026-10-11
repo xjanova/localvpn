@@ -14,7 +14,19 @@ class LicenseState {
   final DateTime? expiresAt;
   final String? deviceId;
   final String? errorMessage;
-  final int? demoMinutesLeft;
+
+  /// Server error code of the last failed action (e.g.
+  /// ALREADY_ACTIVATED_OTHER_DEVICE), for the UI to offer the right fix.
+  final String? errorCode;
+
+  /// Whole days left on a trial or a paid term (null = no end).
+  final int? daysLeft;
+
+  /// This device may still start its one free Pro trial.
+  final bool trialAvailable;
+
+  /// Last answer came from the cache because the server was unreachable.
+  final bool offline;
 
   const LicenseState({
     required this.status,
@@ -23,7 +35,10 @@ class LicenseState {
     this.expiresAt,
     this.deviceId,
     this.errorMessage,
-    this.demoMinutesLeft,
+    this.errorCode,
+    this.daysLeft,
+    this.trialAvailable = false,
+    this.offline = false,
   });
 
   const LicenseState.initial()
@@ -33,7 +48,10 @@ class LicenseState {
         expiresAt = null,
         deviceId = null,
         errorMessage = null,
-        demoMinutesLeft = null;
+        errorCode = null,
+        daysLeft = null,
+        trialAvailable = false,
+        offline = false;
 
   LicenseState copyWith({
     LicenseStatus? status,
@@ -42,7 +60,10 @@ class LicenseState {
     DateTime? expiresAt,
     String? deviceId,
     String? errorMessage,
-    int? demoMinutesLeft,
+    String? errorCode,
+    int? daysLeft,
+    bool? trialAvailable,
+    bool? offline,
   }) {
     return LicenseState(
       status: status ?? this.status,
@@ -51,15 +72,31 @@ class LicenseState {
       expiresAt: expiresAt ?? this.expiresAt,
       deviceId: deviceId ?? this.deviceId,
       errorMessage: errorMessage ?? this.errorMessage,
-      demoMinutesLeft: demoMinutesLeft ?? this.demoMinutesLeft,
+      errorCode: errorCode ?? this.errorCode,
+      daysLeft: daysLeft ?? this.daysLeft,
+      trialAvailable: trialAvailable ?? this.trialAvailable,
+      offline: offline ?? this.offline,
     );
   }
+
+  /// The same state without the error of the last action.
+  LicenseState withoutError() => LicenseState(
+        status: status,
+        licenseKey: licenseKey,
+        licenseType: licenseType,
+        expiresAt: expiresAt,
+        deviceId: deviceId,
+        daysLeft: daysLeft,
+        trialAvailable: trialAvailable,
+        offline: offline,
+      );
 
   bool get isValid =>
       status == LicenseStatus.active ||
       status == LicenseStatus.trial ||
       status == LicenseStatus.free;
 
+  /// Pro features: a paid key or the trial.
   bool get isPaid =>
       status == LicenseStatus.active || status == LicenseStatus.trial;
 
@@ -90,7 +127,7 @@ class LicenseState {
       case 'free':
         return 'ฟรี (จำกัด 5 คน/ห้อง)';
       case 'demo':
-        return 'ทดลองใช้';
+        return 'ทดลองใช้ PRO';
       case 'monthly':
         return 'Premium รายเดือน';
       case 'yearly':

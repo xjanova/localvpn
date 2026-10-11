@@ -9,6 +9,7 @@ import '../platform/platform_info.dart';
 import '../services/license_service.dart';
 import '../services/sound_service.dart';
 import '../widgets/m3/m3.dart';
+import 'license_actions.dart';
 
 /// "ปลดล็อก PRO" — pushed page: hero with the crown and the current badge,
 /// the three PRO plans (gold buy buttons), licence-key entry (QR scan on
@@ -131,11 +132,12 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
     }
     FocusScope.of(context).unfocus();
     setState(() => _activating = true);
-    final success = await _lic.activate(key);
+    final success = await activateLicense(context, _lic, key);
     final err = _lic.state.errorMessage;
-    if (!success) _lic.clearError();
+    if (success != true) _lic.clearError();
     if (!mounted) return;
     setState(() => _activating = false);
+    if (success == null) return; // kept the key on its other devices
 
     if (success) {
       SoundService().play(SfxType.success);
@@ -155,8 +157,9 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
     final go = await m3Confirm(
       context,
       icon3d: M3Icons.crown,
-      title: 'เริ่มทดลองใช้ PRO?',
-      message: 'ระยะทดลองจะเริ่มนับทันทีหลังกดยืนยัน',
+      title: 'เริ่มทดลองใช้ PRO 30 วัน?',
+      message: 'ทดลองได้ครั้งเดียวต่อเครื่อง เริ่มนับทันทีหลังกดยืนยัน '
+          'หมดแล้วใช้แบบฟรีต่อได้',
       confirmLabel: 'เริ่มทดลองใช้',
     );
     if (!go || !mounted) return;
@@ -171,9 +174,9 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
       SoundService().play(SfxType.success);
       m3Toast(
         context,
-        st.demoMinutesLeft == null
+        st.daysLeft == null
             ? 'เริ่มทดลองใช้ PRO แล้ว'
-            : 'เริ่มทดลองใช้ PRO แล้ว — เหลือ ${st.demoMinutesLeft} นาที',
+            : 'เริ่มทดลองใช้ PRO แล้ว — ${daysLeftLabel(st.daysLeft)}',
         tone: M3Tone.green,
       );
       _close(true);
@@ -475,9 +478,9 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
           const _Feature('จำกัดสมาชิกสูงสุด 5 คน/ห้อง', included: false),
           if (!lic.isPaid) ...[
             const SizedBox(height: 16),
-            if (lic.isFree) ...[
+            if (lic.isFree && lic.trialAvailable) ...[
               GlossButton(
-                label: 'ทดลองใช้ PRO ฟรี',
+                label: 'ทดลอง PRO ฟรี 30 วัน',
                 icon: Icons.timer_outlined,
                 variant: GlossVariant.green,
                 expand: true,
@@ -507,7 +510,11 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
           'PRO',
           lic.licenseType == 'lifetime' ? 'ตลอดชีพ' : _daysLeft(lic),
         ),
-      LicenseStatus.trial => (ProBadgeKind.pro, 'PRO', 'ทดลองใช้'),
+      LicenseStatus.trial => (
+          ProBadgeKind.pro,
+          'PRO',
+          lic.daysLeft == null ? 'ทดลองใช้' : 'ทดลอง · ${daysLeftLabel(lic.daysLeft)}',
+        ),
       LicenseStatus.expired => (ProBadgeKind.none, 'PRO', 'หมดอายุ'),
       LicenseStatus.checking => (ProBadgeKind.free, 'FREE', 'กำลังตรวจสอบ'),
       _ => (ProBadgeKind.free, 'FREE', 'อัปเกรดเป็น PRO'),
@@ -516,6 +523,7 @@ class _LicenseGateScreenState extends State<LicenseGateScreen> {
 String _daysLeft(LicenseState lic) {
   final e = lic.expiresAt;
   if (e == null) return lic.typeDisplayName;
+  if (lic.daysLeft != null) return daysLeftLabel(lic.daysLeft);
   final days = e.difference(DateTime.now()).inDays;
   return days >= 0 ? 'เหลือ $days วัน' : 'หมดอายุ';
 }
