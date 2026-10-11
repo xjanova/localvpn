@@ -108,6 +108,32 @@ void main() {
     expect(times.toSet().length, times.length, reason: 'never repeats');
   });
 
+  test('a clock far off is corrected from the backend time', () async {
+    final fake = _Fake();
+    final agent = _agent(fake, roles: 'relay');
+    final serverTime = DateTime.now().millisecondsSinceEpoch ~/ 1000 - 3600;
+    fake.status = 401;
+    fake.answer = '{"ok":false,"error":"stale-time","server_time":$serverTime}';
+    await agent.syncOnce();
+    fake.status = 200;
+    fake.answer = '{"ok":true}';
+    await agent.syncOnce();
+    final sent = int.parse(fake.sent.last.$2['X-Node-Time']!);
+    expect((sent - serverTime).abs(), lessThan(5));
+  });
+
+  test('a report refused as too large drops the per-member detail', () async {
+    final fake = _Fake();
+    final agent = _agent(fake, roles: 'relay');
+    agent.relay = RelayServer(nodeId: 3, secret: utf8.encode('x' * 16));
+    fake.status = 413;
+    await agent.syncOnce();
+    fake.status = 200;
+    await agent.syncOnce();
+    final body = jsonDecode(fake.sent.last.$3) as Map;
+    expect((body['relay'] as Map)['usage'], isEmpty);
+  });
+
   test('a game exit: interface, NAT on the real interface, game-only forward',
       () async {
     final fake = _Fake();

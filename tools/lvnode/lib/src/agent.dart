@@ -203,7 +203,7 @@ class NodeAgent {
     if (++_syncs % 30 == 0) _natState = '';
     await _collect();
     final body = jsonEncode(buildReport());
-    var time = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    var time = DateTime.now().millisecondsSinceEpoch ~/ 1000 + _clockOffset;
     if (time <= _lastTime) time = _lastTime + 1;
     _lastTime = time;
     final signature =
@@ -222,11 +222,40 @@ class NodeAgent {
     if (response.status != 200) {
       _log('sync refused: HTTP ${response.status} '
           '${response.body.substring(0, min(200, response.body.length))}');
+      _recover(response);
       return; // counters stay pending for the next try
     }
     _clearPending();
     final json = jsonDecode(response.body);
     if (json is Map<String, dynamic>) await apply(json);
+  }
+
+  /// Seconds to add to our clock; set from the backend's `server_time`.
+  int _clockOffset = 0;
+
+  /// Refusals that would repeat forever unless the node changes something.
+  void _recover(SyncResponse response) {
+    if (response.status == 413) {
+      // Too many members to list: keep the totals, drop the per-member
+      // detail, or every later sync would be refused as well.
+      _log('report too large: per-member usage since the last sync dropped');
+      _pendingRelay.clear();
+      _pendingExit.clear();
+      return;
+    }
+    if (response.status == 401) {
+      try {
+        final json = jsonDecode(response.body);
+        final server = json is Map ? _asInt(json['server_time']) : null;
+        if (server != null && json['error'] == 'stale-time') {
+          final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+          _clockOffset = server - now;
+          _lastTime = 0; // the refused times were never accepted
+          _log('clock is off by ${_clockOffset}s; using the backend time '
+              '(fix NTP on this server)');
+        }
+      } catch (_) {}
+    }
   }
 
   Map<String, dynamic> buildReport() => {

@@ -1,8 +1,8 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
+import '../database/app_store.dart';
 import '../platform/platform_info.dart';
 import '../platform/windows_native.dart';
 
@@ -56,14 +56,14 @@ class WindowsTuneup {
     if (r.exitCode != 0) {
       return TuneupResult(false, _first(r) ?? 'ปิดการสแกน Wi-Fi ไม่สำเร็จ');
     }
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     await prefs.setString(_prefWlan, interfaceName);
     return const TuneupResult(true, 'หยุดการสแกน Wi-Fi เบื้องหลังแล้ว');
   }
 
   static Future<TuneupResult> restoreWifiScan() async {
     if (!isWindows) return const TuneupResult(true, '');
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     final name = prefs.getString(_prefWlan);
     if (name == null || !_safeName(name)) return const TuneupResult(true, '');
     final r = await Process.run(
@@ -95,14 +95,14 @@ class WindowsTuneup {
       return const TuneupResult(false,
           'เครื่องนี้ไม่มีแผน "ประสิทธิภาพสูง" (พบบ่อยในโน้ตบุ๊ก Modern Standby)');
     }
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     await prefs.setString(_prefPowerScheme, guid);
     return const TuneupResult(true, 'เปลี่ยนเป็นแผนพลังงานประสิทธิภาพสูงแล้ว');
   }
 
   static Future<TuneupResult> restorePower() async {
     if (!isWindows) return const TuneupResult(true, '');
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     final guid = prefs.getString(_prefPowerScheme);
     if (guid == null || !_guidRe.hasMatch(guid)) {
       return const TuneupResult(true, '');
@@ -135,7 +135,7 @@ class WindowsTuneup {
         return TuneupResult(false, _first(r) ?? 'แก้ registry ไม่สำเร็จ');
       }
     }
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     await prefs.setString(_prefNagleGuid, adapterGuid);
     return const TuneupResult(true,
         'ปิด Nagle แล้ว (มีผลกับการเชื่อมต่อใหม่ — เปิดเกมใหม่อีกครั้ง)');
@@ -143,7 +143,7 @@ class WindowsTuneup {
 
   static Future<TuneupResult> restoreNagle() async {
     if (!isWindows) return const TuneupResult(true, '');
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     final guid = prefs.getString(_prefNagleGuid);
     if (guid == null) return const TuneupResult(true, '');
     final key = _ifaceKey(guid);
@@ -155,7 +155,7 @@ class WindowsTuneup {
   }
 
   static Future<bool> isNagleDisabled() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     return prefs.getString(_prefNagleGuid) != null;
   }
 

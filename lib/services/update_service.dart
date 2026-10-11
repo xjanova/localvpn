@@ -7,8 +7,9 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+
+import '../database/app_store.dart';
 
 class UpdateService extends ChangeNotifier {
   static const String _checkUpdateUrl =
@@ -76,7 +77,7 @@ class UpdateService extends ChangeNotifier {
     } catch (_) {}
 
     if (!force) {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await AppStore.instance();
       final lastCheck = prefs.getString(_prefLastUpdateCheck);
       if (lastCheck != null) {
         final last = DateTime.tryParse(lastCheck);
@@ -114,7 +115,7 @@ class UpdateService extends ChangeNotifier {
             _latestVersion != null &&
             _isNewerVersion(_currentVersion, _latestVersion!);
 
-        final prefs = await SharedPreferences.getInstance();
+        final prefs = await AppStore.instance();
         await prefs.setString(
           _prefLastUpdateCheck,
           DateTime.now().toIso8601String(),

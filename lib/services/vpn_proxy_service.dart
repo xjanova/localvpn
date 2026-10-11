@@ -4,10 +4,10 @@ import 'dart:io';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wireguard_flutter_plus/wireguard_flutter_plus.dart';
 import 'package:wireguard_flutter_plus/wireguard_flutter_platform_interface.dart';
 
+import '../database/app_store.dart';
 import '../models/proxy_server.dart';
 import 'net/cidr.dart';
 import 'net/latency_probe.dart';
@@ -155,13 +155,18 @@ class VpnProxyService extends ChangeNotifier {
 
   /// Check if VPN is already running (e.g. app was killed and reopened)
   Future<void> _checkExistingConnection() async {
+    // wireguard_flutter_plus 1.0.4 on Windows opens the service manager with
+    // full access inside stage() and doesn't catch the failure: without admin
+    // rights the whole app aborts (0xC0000409). Without admin there is no
+    // tunnel of ours to restore anyway.
+    if (Platform.isWindows && !await WindowsNative.isElevated()) return;
     try {
       final currentStage = await _wireguard.stage();
       debugPrint('WireGuard initial stage: ${currentStage.name}');
 
       if (currentStage == VpnStage.connected) {
         // VPN is still running — restore UI state from cache
-        final prefs = await SharedPreferences.getInstance();
+        final prefs = await AppStore.instance();
         _connectedServerName = prefs.getString(_prefCachedServerName);
         _connectedCountry = prefs.getString(_prefCachedCountryCode);
         _connectedIp = _cachedConfigParts?['endpoint']?.toString().split(':').first;
@@ -186,7 +191,7 @@ class VpnProxyService extends ChangeNotifier {
   // ─── Key Management ────────────────────────────────────────────────
 
   Future<void> _loadKeys() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     _privateKey = prefs.getString(_prefPrivateKey);
     _publicKey = prefs.getString(_prefPublicKey);
 
@@ -216,7 +221,7 @@ class VpnProxyService extends ChangeNotifier {
     final publicBytes = _curve25519ScalarMultBase(privateBytes);
     _publicKey = base64Encode(publicBytes);
 
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     await prefs.setString(_prefPrivateKey, _privateKey!);
     await prefs.setString(_prefPublicKey, _publicKey!);
   }
@@ -305,18 +310,18 @@ class VpnProxyService extends ChangeNotifier {
   // ─── Caching ───────────────────────────────────────────────────────
 
   Future<void> _loadLastCountry() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     _lastCountryCode = prefs.getString(_prefLastCountry);
   }
 
   Future<void> _saveLastCountry(String code) async {
     _lastCountryCode = code;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     await prefs.setString(_prefLastCountry, code);
   }
 
   Future<void> _loadCachedServers() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     final cached = prefs.getString(_prefCachedServers);
     if (cached != null) {
       try {
@@ -346,7 +351,7 @@ class VpnProxyService extends ChangeNotifier {
   }
 
   Future<void> _cacheServers() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     final data = {
       'countries': _countries.map((c) => c.toJson()).toList(),
       'locked_countries': _lockedCountries.map((c) => c.toJson()).toList(),
@@ -358,7 +363,7 @@ class VpnProxyService extends ChangeNotifier {
   Future<void> _cacheConfig(Map<String, dynamic> configParts,
       String serverName, String countryCode, String countryName) async {
     _cachedConfigParts = configParts;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     await prefs.setString(_prefCachedConfig, jsonEncode(configParts));
     await prefs.setString(_prefCachedServerName, serverName);
     await prefs.setString(_prefCachedCountryCode, countryCode);
@@ -861,7 +866,7 @@ class VpnProxyService extends ChangeNotifier {
 
     debugPrint('WireGuard reconnecting with cached config');
 
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     final serverName = prefs.getString(_prefCachedServerName) ?? 'cached';
     final countryCode = prefs.getString(_prefCachedCountryCode) ?? '';
 

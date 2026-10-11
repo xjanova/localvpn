@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../database/app_store.dart';
 import 'm3_palette.dart';
 
 export 'm3_palette.dart';
@@ -555,7 +555,7 @@ class M3ThemeController extends ChangeNotifier {
 
   Future<void> load() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await AppStore.instance();
       _isNight = prefs.getString(_prefKey) != 'sky';
     } catch (_) {
       _isNight = true;
@@ -567,7 +567,7 @@ class M3ThemeController extends ChangeNotifier {
     _isNight = night;
     notifyListeners();
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await AppStore.instance();
       await prefs.setString(_prefKey, night ? 'night' : 'sky');
     } catch (_) {}
   }

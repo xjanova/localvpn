@@ -3,7 +3,8 @@ import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+
+import '../database/app_store.dart';
 
 /// 16-bit chiptune sound engine for cyberpunk UI feedback.
 /// Generates retro-style WAV sounds entirely in code — no asset files needed.
@@ -30,7 +31,7 @@ class SoundService {
 
     // Load preference
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await AppStore.instance();
       _enabled = prefs.getBool(_prefKey) ?? true;
     } catch (_) {}
 
@@ -62,7 +63,7 @@ class SoundService {
   Future<void> setEnabled(bool value) async {
     _enabled = value;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await AppStore.instance();
       await prefs.setBool(_prefKey, value);
     } catch (_) {}
   }

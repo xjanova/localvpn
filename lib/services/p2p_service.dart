@@ -7,8 +7,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
+import '../database/app_store.dart';
 import '../models/member.dart';
 import 'net/stun_client.dart';
 import 'p2p_crypto.dart';
@@ -433,9 +433,9 @@ class P2pService extends ChangeNotifier {
   }
 
   Future<P2pIdentity> _loadOrCreateIdentity() async {
-    SharedPreferences? prefs;
+    AppStore? prefs;
     try {
-      prefs = await SharedPreferences.getInstance();
+      prefs = await AppStore.instance();
       final stored = prefs.getString(_prefPrivateKey);
       if (stored != null) {
         final bytes = base64Decode(stored);
@@ -458,9 +458,9 @@ class P2pService extends ChangeNotifier {
   /// A session id above every one this device used before, so peers can
   /// tell a restart from a replay.
   Future<int> _newSessionId() async {
-    SharedPreferences? prefs;
+    AppStore? prefs;
     try {
-      prefs = await SharedPreferences.getInstance();
+      prefs = await AppStore.instance();
       _lastSessionId = max(_lastSessionId, prefs.getInt(_prefLastSession) ?? 0);
     } catch (_) {}
     final id = P2pCrypto.nextSessionId(_lastSessionId);

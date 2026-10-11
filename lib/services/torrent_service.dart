@@ -8,8 +8,8 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
+import '../database/app_store.dart';
 import '../models/bt_models.dart';
 
 /// Service for the Global BitTorrent system API calls.
@@ -800,7 +800,7 @@ class TorrentService extends ChangeNotifier {
   Future<Map<String, String>> _paths() async {
     if (_localPaths != null) return _localPaths!;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await AppStore.instance();
       final raw = prefs.getString(_prefLocalPaths);
       _localPaths = raw == null
           ? {}
@@ -818,7 +818,7 @@ class TorrentService extends ChangeNotifier {
     final map = await _paths();
     map[fileHash] = path;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await AppStore.instance();
       await prefs.setString(_prefLocalPaths, jsonEncode(map));
     } catch (_) {}
   }

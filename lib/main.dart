@@ -27,15 +27,16 @@ Future<void> main(List<String> args) async {
 
   final options = LaunchOptions.parse(args);
 
-  final theme = M3ThemeController.instance;
-  await theme.load();
-  if (options.theme != null) theme.force(options.theme == 'night');
-
   if (isDesktop) {
-    // sqflite has no desktop plugin; use the FFI build of SQLite.
+    // sqflite has no desktop plugin; use the FFI build of SQLite. Before
+    // anything reads settings: they live in SQLite (AppStore).
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   }
+
+  final theme = M3ThemeController.instance;
+  await theme.load();
+  if (options.theme != null) theme.force(options.theme == 'night');
 
   if (isWindows) {
     await windowManager.ensureInitialized();

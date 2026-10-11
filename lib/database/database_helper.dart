@@ -28,10 +28,22 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _onCreate,
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) await ensureKvTable(db);
+      },
     );
   }
+
+  /// Settings and small app state (see AppStore). Values are JSON.
+  static Future<void> ensureKvTable(Database db) => db.execute('''
+        CREATE TABLE IF NOT EXISTS kv (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      ''');
 
   Future<void> _onCreate(Database db, int version) async {
     await db.execute('''
@@ -62,6 +74,8 @@ class DatabaseHelper {
         value TEXT NOT NULL
       )
     ''');
+
+    await ensureKvTable(db);
   }
 
   // Saved Networks CRUD

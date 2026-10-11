@@ -6,8 +6,8 @@ import 'package:crypto/crypto.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
+import '../database/app_store.dart';
 import '../models/license_state.dart';
 
 class LicenseService extends ChangeNotifier {
@@ -30,7 +30,7 @@ class LicenseService extends ChangeNotifier {
   String? _deviceId;
   String? get deviceId => _deviceId;
 
-  SharedPreferences? _cachedPrefs;
+  AppStore? _cachedPrefs;
 
   bool _isProcessing = false;
   bool get isProcessing => _isProcessing;
@@ -40,7 +40,7 @@ class LicenseService extends ChangeNotifier {
     notifyListeners();
 
     await _generateDeviceId();
-    _cachedPrefs = await SharedPreferences.getInstance();
+    _cachedPrefs = await AppStore.instance();
     await _deriveKey(); // Ensure salt is generated on first launch
 
     if (_detectClockTamper() || await _checkClockTamperAsync()) {
@@ -55,7 +55,7 @@ class LicenseService extends ChangeNotifier {
 
     await _saveLastKnownTime();
 
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     final encryptedKey = prefs.getString(_prefLicenseKey);
 
     if (encryptedKey != null && encryptedKey.isNotEmpty) {
@@ -70,7 +70,7 @@ class LicenseService extends ChangeNotifier {
   }
 
   Future<void> _generateDeviceId() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     final cached = prefs.getString(_prefDeviceId);
 
     if (cached != null && cached.isNotEmpty) {
@@ -116,7 +116,7 @@ class LicenseService extends ChangeNotifier {
   }
 
   Future<bool> _checkClockTamperAsync() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     final lastKnownStr = prefs.getString(_prefLastKnownTime);
     if (lastKnownStr == null) return false;
 
@@ -131,7 +131,7 @@ class LicenseService extends ChangeNotifier {
   }
 
   Future<void> _saveLastKnownTime() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     await prefs.setString(_prefLastKnownTime, DateTime.now().toIso8601String());
   }
 
@@ -189,7 +189,7 @@ class LicenseService extends ChangeNotifier {
       final data = jsonDecode(response.body) as Map<String, dynamic>;
 
       if (response.statusCode == 200 && data['success'] == true) {
-        final prefs = await SharedPreferences.getInstance();
+        final prefs = await AppStore.instance();
         await prefs.setString(_prefLicenseKey, _encrypt(sanitized));
         await prefs.setString(
           _prefLicenseType,
@@ -236,7 +236,7 @@ class LicenseService extends ChangeNotifier {
   }
 
   Future<void> validate([String? key]) async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     final licenseKey =
         key ?? _decrypt(prefs.getString(_prefLicenseKey) ?? '');
 
@@ -361,7 +361,7 @@ class LicenseService extends ChangeNotifier {
         final licenseKey = licenseData?['license_key'] as String?;
         final licenseType = licenseData?['license_type'] as String?;
         if (licenseKey != null) {
-          final prefs = await SharedPreferences.getInstance();
+          final prefs = await AppStore.instance();
           await prefs.setString(_prefLicenseKey, _encrypt(licenseKey));
 
           // For free licenses, set free mode directly without re-validating
@@ -416,7 +416,7 @@ class LicenseService extends ChangeNotifier {
       final data = jsonDecode(response.body) as Map<String, dynamic>;
 
       if (response.statusCode == 200 && data['success'] == true) {
-        final prefs = await SharedPreferences.getInstance();
+        final prefs = await AppStore.instance();
         await prefs.setBool(_prefDemoStarted, true);
 
         final minutesLeft = data['minutes_left'] as int? ?? 60;
@@ -494,7 +494,7 @@ class LicenseService extends ChangeNotifier {
   }
 
   Future<void> deactivate() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     await prefs.remove(_prefLicenseKey);
     await prefs.remove(_prefLicenseType);
     await prefs.remove(_prefLicenseExpiry);
@@ -546,7 +546,7 @@ class LicenseService extends ChangeNotifier {
 
   // Device-specific XOR encryption for local storage
   Future<List<int>> _deriveKey() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     String? salt = prefs.getString(_prefSalt);
     if (salt == null || salt.isEmpty) {
       final random = Random.secure();

@@ -3,8 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
+import '../database/app_store.dart';
 import '../models/proxy_server.dart';
 import '../platform/platform_info.dart';
 import '../platform/windows_native.dart';
@@ -274,7 +274,7 @@ class GameBoostService extends ChangeNotifier {
 
   Future<void> load() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await AppStore.instance();
       final id = prefs.getString(_prefRegion);
       _region = regions.firstWhere((r) => r.id == id,
           orElse: () => regions.first);
@@ -292,7 +292,7 @@ class GameBoostService extends ChangeNotifier {
     _direct = null;
     _relays.clear();
     _notify();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     await prefs.setString(_prefRegion, r.id);
   }
 
@@ -311,7 +311,7 @@ class GameBoostService extends ChangeNotifier {
     _direct = null;
     _relays.clear();
     _notify();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     if (_customHost == null) {
       await prefs.remove(_prefCustomHost);
     } else {
@@ -324,7 +324,7 @@ class GameBoostService extends ChangeNotifier {
     if (wifi != null) wifiTweak = wifi;
     if (power != null) powerTweak = power;
     _notify();
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await AppStore.instance();
     await prefs.setBool(_prefWifiTweak, wifiTweak);
     await prefs.setBool(_prefPowerTweak, powerTweak);
   }
