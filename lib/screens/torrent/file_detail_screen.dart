@@ -1,13 +1,28 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:open_file/open_file.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../models/bt_models.dart';
+import '../../platform/platform_info.dart';
 import '../../services/sound_service.dart';
 import '../../services/torrent_service.dart';
-import '../../theme/app_theme.dart';
-import '../../widgets/glass_card.dart';
+import '../../widgets/m3/m3.dart';
+import 'category_files_screen.dart';
 
+/// Hash of the file this page started downloading. The service runs one
+/// download at a time and doesn't say which file it is, so progress is only
+/// shown on the page of the file that is really downloading.
+String? _activeDownloadHash;
+
+/// Where finished downloads were saved this session (file hash → path).
+final Map<String, String> _savedPaths = {};
+
+/// One community file: hero with the numbers, download through the server
+/// relay (progress, save location), seeding, details and the seeder list.
 class FileDetailScreen extends StatefulWidget {
   final TorrentService torrentService;
   final int fileId;
@@ -28,20 +43,29 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
   BtFile? _file;
   List<BtSeeder> _seeders = [];
   bool _isLoading = true;
+  bool _fetching = false;
+  bool _seedersLoaded = false;
 
   bool _isRegistering = false;
+  bool _preparing = false; // overwrite check before a download
+
+  String? _saveDir;
+  bool _existsLocally = false;
+
+  TorrentService get t => widget.torrentService;
 
   @override
   void initState() {
     super.initState();
     _file = widget.initialFile;
-    widget.torrentService.addListener(_onServiceChanged);
+    t.addListener(_onServiceChanged);
     _loadDetail();
+    _resolveSaveDir();
   }
 
   @override
   void dispose() {
-    widget.torrentService.removeListener(_onServiceChanged);
+    t.removeListener(_onServiceChanged);
     super.dispose();
   }
 
@@ -50,718 +74,786 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
   }
 
   Future<void> _loadDetail() async {
-    setState(() => _isLoading = true);
+    if (_fetching) return;
+    _fetching = true;
+    if (!_isLoading) setState(() => _isLoading = true);
 
     final results = await Future.wait([
-      widget.torrentService.fetchFileDetail(widget.fileId),
-      widget.torrentService.fetchSeeders(widget.fileId),
+      t.fetchFileDetail(widget.fileId),
+      t.fetchSeeders(widget.fileId),
     ]);
+    _fetching = false;
 
-    if (mounted) {
-      setState(() {
-        _file = results[0] as BtFile? ?? _file;
-        _seeders = results[1] as List<BtSeeder>;
-        _isLoading = false;
-      });
+    if (!mounted) return;
+    setState(() {
+      _file = results[0] as BtFile? ?? _file;
+      _seeders = results[1] as List<BtSeeder>;
+      _seedersLoaded = true;
+      _isLoading = false;
+    });
+    _checkLocal();
+  }
+
+  // ── Save location ─────────────────────────────────────────────────────
+
+  /// Same folder the service writes to: Documents/LocalVPN/Torrent.
+  Future<void> _resolveSaveDir() async {
+    try {
+      final d = await getApplicationDocumentsDirectory();
+      if (!mounted) return;
+      setState(() => _saveDir = '${d.path}/LocalVPN/Torrent');
+      _checkLocal();
+    } catch (_) {}
+  }
+
+  Future<void> _checkLocal() async {
+    final dir = _saveDir;
+    final f = _file;
+    if (dir == null || f == null || !_safeName(f.fileName)) return;
+    try {
+      final exists = await File('$dir/${f.fileName}').exists();
+      if (!mounted) return;
+      if (exists != _existsLocally) setState(() => _existsLocally = exists);
+    } catch (_) {}
+  }
+
+  /// A server-supplied name must stay inside the download folder.
+  static bool _safeName(String name) =>
+      name.trim().isNotEmpty &&
+      name != '.' &&
+      name != '..' &&
+      !RegExp(r'[\\/:]').hasMatch(name);
+
+  static String _display(String path) =>
+      isWindows ? path.replaceAll('/', r'\') : path;
+
+  String? _savedPathFor(BtFile f) {
+    final saved = _savedPaths[f.fileHash];
+    if (saved != null) return saved;
+    final dir = _saveDir;
+    if (_existsLocally && dir != null) return '$dir/${f.fileName}';
+    return null;
+  }
+
+  Future<void> _openPath(String path) async {
+    try {
+      final r = await OpenFile.open(_display(path));
+      if (!mounted) return;
+      if (r.type != ResultType.done) {
+        m3Toast(context, 'เปิดไม่ได้ — ไม่พบโปรแกรมที่ใช้เปิดไฟล์นี้',
+            tone: M3Tone.amber);
+      }
+    } catch (_) {
+      if (mounted) m3Toast(context, 'เปิดไม่ได้', tone: M3Tone.red);
     }
   }
 
+  Future<void> _openFolder() async {
+    final dir = _saveDir;
+    if (dir == null) return;
+    try {
+      await Directory(dir).create(recursive: true);
+    } catch (_) {}
+    await _openPath(dir);
+  }
+
+  // ── Actions ───────────────────────────────────────────────────────────
+
+  static String _friendly(String raw) {
+    if (raw.contains('TimeoutException')) {
+      return 'เซิร์ฟเวอร์ตอบช้าเกินไป ลองใหม่อีกครั้ง';
+    }
+    if (raw.contains('SocketException') ||
+        raw.contains('ClientException') ||
+        raw.contains('HandshakeException')) {
+      return 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่';
+    }
+    if (raw.contains('FormatException')) {
+      return 'ข้อมูลจากเซิร์ฟเวอร์ไม่ถูกต้อง ลองใหม่อีกครั้ง';
+    }
+    if (raw.contains('FileSystemException')) {
+      return 'บันทึกไฟล์ลงเครื่องไม่สำเร็จ ตรวจสอบพื้นที่ว่างและสิทธิ์ของโฟลเดอร์';
+    }
+    return raw.replaceFirst(RegExp(r'^\w*Exception:\s*'), '');
+  }
+
+  Future<void> _download(BtFile file) async {
+    final online = _seeders.where((s) => s.isOnline).toList();
+    if (online.isEmpty || t.isDownloadingFile || _preparing) return;
+    if (!_safeName(file.fileName)) {
+      m3Toast(context, 'ชื่อไฟล์นี้ไม่ปลอดภัย จึงบันทึกลงเครื่องไม่ได้',
+          tone: M3Tone.red);
+      return;
+    }
+
+    setState(() => _preparing = true);
+    var proceed = true;
+    final dir = _saveDir;
+    if (dir != null) {
+      bool exists = false;
+      try {
+        exists = await File('$dir/${file.fileName}').exists();
+      } catch (_) {}
+      if (!mounted) return;
+      if (exists) {
+        proceed = await m3Confirm(
+          context,
+          icon3d: M3Icons.file,
+          title: 'เขียนทับไฟล์เดิม?',
+          message: 'มีไฟล์ "${file.fileName}" อยู่ในโฟลเดอร์ดาวน์โหลดแล้ว '
+              'ถ้าดาวน์โหลดต่อ ไฟล์เดิมจะถูกแทนที่',
+          confirmLabel: 'เขียนทับ',
+          destructive: true,
+        );
+      }
+    }
+    if (!mounted) return;
+    setState(() => _preparing = false);
+    if (!proceed || t.isDownloadingFile) return;
+
+    _activeDownloadHash = file.fileHash;
+    final path = await t.downloadFile(file, online);
+    if (_activeDownloadHash == file.fileHash) _activeDownloadHash = null;
+    if (path != null) _savedPaths[file.fileHash] = path;
+    if (!mounted) return;
+
+    if (path != null) {
+      SoundService().play(SfxType.coin);
+      HapticFeedback.heavyImpact();
+      m3Toast(context, 'ดาวน์โหลดสำเร็จ: ${file.displayTitle}',
+          tone: M3Tone.green);
+      setState(() => _existsLocally = true);
+      _loadDetail();
+    } else {
+      m3Toast(
+        context,
+        _friendly(t.downloadError ?? t.error ?? 'ดาวน์โหลดไม่สำเร็จ ลองใหม่อีกครั้ง'),
+        tone: M3Tone.red,
+      );
+      setState(() {});
+    }
+  }
+
+  Future<void> _seed(BtFile file) async {
+    if (_isRegistering) return;
+    setState(() => _isRegistering = true);
+    try {
+      final success = await t.registerSeeder(fileHash: file.fileHash);
+      if (!mounted) return;
+      if (success) {
+        SoundService().play(SfxType.coin);
+        HapticFeedback.mediumImpact();
+        m3Toast(context, 'ลงทะเบียนเป็น Seeder แล้ว', tone: M3Tone.green);
+        _loadDetail();
+      } else {
+        m3Toast(context, _friendly(t.error ?? 'ลงทะเบียนไม่สำเร็จ'),
+            tone: M3Tone.red);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      m3Toast(context, 'เกิดข้อผิดพลาด ลงทะเบียนไม่สำเร็จ', tone: M3Tone.red);
+    } finally {
+      if (mounted) setState(() => _isRegistering = false);
+    }
+  }
+
+  void _copyHash(BtFile file) {
+    Clipboard.setData(ClipboardData(text: file.fileHash));
+    SoundService().play(SfxType.coin);
+    HapticFeedback.lightImpact();
+    m3Toast(context, 'คัดลอก File Hash แล้ว', tone: M3Tone.green);
+  }
+
+  void _copyMagnet(BtFile file) {
+    final parts = <String>[
+      'hash:${file.fileHash}',
+      'name:${file.fileName}',
+    ];
+    for (final s in _seeders.where((s) => s.isOnline)) {
+      if (s.publicIp != null && s.publicPort != null) {
+        parts.add('peer:${s.publicIp}:${s.publicPort}');
+      }
+    }
+    Clipboard.setData(ClipboardData(text: 'magnet:?${parts.join('&')}'));
+    SoundService().play(SfxType.coin);
+    HapticFeedback.lightImpact();
+    m3Toast(context, 'คัดลอก Magnet Link แล้ว', tone: M3Tone.green);
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: Container(
-        decoration: BoxDecoration(gradient: AppTheme.backgroundGradient),
-        child: SafeArea(
-          child: Column(
-            children: [
-              _buildAppBar(),
-              Expanded(
-                child: _isLoading && _file == null
-                    ? const Center(
-                        child: CircularProgressIndicator(
-                            color: AppColors.primary),
-                      )
-                    : _file == null
-                        ? const Center(
-                            child: Text(
-                              'ไม่พบไฟล์',
-                              style: TextStyle(color: AppColors.textSecondary),
-                            ),
-                          )
-                        : _buildContent(),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+    final file = _file;
+    final catName = file?.category?.name;
 
-  Widget _buildAppBar() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 8, 20, 0),
-      child: Row(
-        children: [
-          IconButton(
-            icon: const Icon(Icons.arrow_back_ios,
-                color: AppColors.primary, size: 20),
-            onPressed: () {
-              SoundService().play(SfxType.swoosh);
-              Navigator.pop(context);
-            },
-          ),
-          const SizedBox(width: 4),
-          const Expanded(
-            child: Text(
-              'รายละเอียดไฟล์',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: AppColors.textPrimary,
+    return M3PageBody(
+      onRefresh: _loadDetail,
+      children: [
+        M3PageHeader(
+          icon3d: M3Icons.file,
+          title: 'รายละเอียดไฟล์',
+          subtitle: catName != null ? 'หมวด $catName' : 'ไฟล์จากคลังชุมชน',
+          onBack: () => Navigator.of(context).pop(),
+        ),
+        const SizedBox(height: 16),
+        if (file == null && _isLoading)
+          const GlassPanel(
+            child: M3EmptyState(
+              icon3d: M3Icons.file,
+              title: 'กำลังโหลดข้อมูลไฟล์…',
+            ),
+          )
+        else if (file == null)
+          GlassPanel(
+            child: M3EmptyState(
+              icon3d: M3Icons.file,
+              title: 'ไม่พบไฟล์',
+              message: 'ไฟล์นี้อาจถูกลบหรือปิดการแชร์แล้ว',
+              action: GlossButton(
+                label: 'ลองอีกครั้ง',
+                icon: Icons.refresh_rounded,
+                onPressed: _loadDetail,
               ),
             ),
-          ),
-        ],
-      ),
-    ).animate().slideY(begin: -0.3, end: 0, duration: 400.ms);
-  }
-
-  Widget _buildContent() {
-    final file = _file!;
-
-    return RefreshIndicator(
-      onRefresh: _loadDetail,
-      color: AppColors.primary,
-      backgroundColor: AppColors.surface,
-      child: SingleChildScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // File info card
-            GlassCard(
-              child: Column(
+          )
+        else ...[
+          _hero(file)
+              .animate()
+              .fadeIn(duration: 350.ms)
+              .slideY(begin: 0.04, end: 0),
+          const SizedBox(height: 16),
+          LayoutBuilder(builder: (context, c) {
+            final download = _downloadCard(file);
+            final details = _detailsCard(file);
+            final seeders = _seedersCard();
+            if (c.maxWidth >= 980) {
+              return Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Thumbnail
-                  if (file.thumbnailUrl != null)
-                    Container(
-                      width: double.infinity,
-                      height: 180,
-                      margin: const EdgeInsets.only(bottom: 16),
-                      decoration: BoxDecoration(
-                        color: AppColors.surfaceLight,
-                        borderRadius: BorderRadius.circular(12),
-                        image: !file.thumbnailUrl!.startsWith('data:')
-                            ? DecorationImage(
-                                image: NetworkImage(file.thumbnailUrl!),
-                                fit: BoxFit.cover,
-                              )
-                            : null,
-                      ),
-                    ),
-
-                  // Title / File name
-                  Text(
-                    file.displayTitle,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.textPrimary,
-                    ),
-                  ),
-                  if (file.title != null && file.title!.isNotEmpty && file.title != file.fileName) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      file.fileName,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textMuted,
-                        fontFamily: 'monospace',
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-
-                  // Stats row
-                  Row(
-                    children: [
-                      _buildStatBadge(
-                        Icons.storage,
-                        file.fileSizeFormatted,
-                        AppColors.primary,
-                      ),
-                      const SizedBox(width: 8),
-                      _buildStatBadge(
-                        Icons.download,
-                        '${file.downloadCount} ดาวน์โหลด',
-                        AppColors.success,
-                      ),
-                      const SizedBox(width: 8),
-                      _buildStatBadge(
-                        Icons.people,
-                        '${file.onlineSeedersCount} seeders',
-                        file.onlineSeedersCount > 0
-                            ? AppColors.success
-                            : AppColors.error,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Description
-                  if (file.description != null &&
-                      file.description!.isNotEmpty) ...[
-                    const Text(
-                      'รายละเอียด',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textPrimary,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      file.description!,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        color: AppColors.textSecondary,
-                        height: 1.5,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-
-                  // Meta info
-                  _buildMetaRow('ผู้อัพโหลด',
-                      file.uploaderDisplayName ?? 'Unknown'),
-                  if (file.chunkSize != null)
-                    _buildMetaRow('Chunk Size', '${file.chunkSize} bytes'),
-                  if (file.totalChunks != null)
-                    _buildMetaRow('Total Chunks', '${file.totalChunks}'),
-                  _buildMetaRow('Hash', file.fileHash.length >= 16
-                    ? '${file.fileHash.substring(0, 16)}...'
-                    : file.fileHash),
-                  if (file.category != null)
-                    _buildMetaRow('หมวดหมู่', file.category!.name),
-                  if (file.createdAt != null)
-                    _buildMetaRow(
-                      'อัพโหลดเมื่อ',
-                      '${file.createdAt!.day}/${file.createdAt!.month}/${file.createdAt!.year}',
-                    ),
-                ],
-              ),
-            ).animate().fadeIn(duration: 400.ms, delay: 100.ms),
-
-            const SizedBox(height: 16),
-
-            // Copy hash button
-            GlassCard(
-              onTap: () {
-                Clipboard.setData(ClipboardData(text: file.fileHash));
-                SoundService().play(SfxType.coin);
-                HapticFeedback.lightImpact();
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('คัดลอก File Hash แล้ว'),
-                      duration: Duration(seconds: 2),
-                    ),
-                  );
-                }
-              },
-              padding: const EdgeInsets.all(14),
-              child: const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.copy, color: AppColors.primary, size: 18),
-                  SizedBox(width: 8),
-                  Text(
-                    'คัดลอก File Hash',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.primary,
-                    ),
-                  ),
-                ],
-              ),
-            ).animate().fadeIn(duration: 400.ms, delay: 200.ms),
-
-            const SizedBox(height: 12),
-
-            // Download / Seed action
-            _buildDownloadSeedCard(file),
-
-            const SizedBox(height: 12),
-
-            // Copy Magnet Link
-            GlassCard(
-              onTap: () {
-                final magnetParts = <String>[
-                  'hash:${file.fileHash}',
-                  'name:${file.fileName}',
-                ];
-                for (final seeder in _seeders.where((s) => s.isOnline)) {
-                  if (seeder.publicIp != null && seeder.publicPort != null) {
-                    magnetParts.add('peer:${seeder.publicIp}:${seeder.publicPort}');
-                  }
-                }
-                final magnetLink = 'magnet:?${magnetParts.join('&')}';
-                Clipboard.setData(ClipboardData(text: magnetLink));
-                SoundService().play(SfxType.coin);
-                HapticFeedback.lightImpact();
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('คัดลอก Magnet Link แล้ว'),
-                      duration: Duration(seconds: 2),
-                    ),
-                  );
-                }
-              },
-              padding: const EdgeInsets.all(14),
-              child: const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.link, color: AppColors.secondary, size: 18),
-                  SizedBox(width: 8),
-                  Text(
-                    'คัดลอก Magnet Link',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.secondary,
-                    ),
-                  ),
-                ],
-              ),
-            ).animate().fadeIn(duration: 400.ms, delay: 250.ms),
-
-            const SizedBox(height: 20),
-
-            // Seeders section
-            const Text(
-              'Seeders',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textPrimary,
-              ),
-            ).animate().fadeIn(duration: 300.ms, delay: 250.ms),
-            const SizedBox(height: 12),
-
-            if (_seeders.isEmpty)
-              GlassCard(
-                child: const Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(20),
+                  Expanded(
+                    flex: 5,
                     child: Column(
-                      children: [
-                        Icon(Icons.cloud_off,
-                            color: AppColors.textMuted, size: 40),
-                        SizedBox(height: 8),
-                        Text(
-                          'ไม่มี seeder ออนไลน์',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: AppColors.textSecondary,
-                          ),
-                        ),
-                      ],
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [details, const SizedBox(height: 16), seeders],
                     ),
                   ),
-                ),
-              ).animate().fadeIn(duration: 400.ms, delay: 300.ms)
-            else
-              ...List.generate(_seeders.length, (index) {
-                final seeder = _seeders[index];
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: GlassCard(
-                    padding: const EdgeInsets.all(12),
-                    borderColor: seeder.isOnline
-                        ? AppColors.success.withValues(alpha: 0.2)
-                        : AppColors.cardBorder,
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 36,
-                          height: 36,
-                          decoration: BoxDecoration(
-                            color: seeder.isOnline
-                                ? AppColors.success.withValues(alpha: 0.1)
-                                : AppColors.surfaceLight,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Icon(
-                            seeder.isOnline
-                                ? Icons.cloud_done
-                                : Icons.cloud_off,
-                            color: seeder.isOnline
-                                ? AppColors.success
-                                : AppColors.textMuted,
-                            size: 18,
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                seeder.displayName ?? seeder.machineId,
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: AppColors.textPrimary,
-                                ),
-                              ),
-                              if (seeder.publicIp != null &&
-                                  seeder.publicPort != null)
-                                Text(
-                                  '${seeder.publicIp}:${seeder.publicPort}',
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: AppColors.textSecondary,
-                                  ),
-                                ),
-                              Text(
-                                seeder.machineId,
-                                style: const TextStyle(
-                                  fontSize: 10,
-                                  fontFamily: 'monospace',
-                                  color: AppColors.textMuted,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              Text(
-                                seeder.isOnline ? 'ออนไลน์' : 'ออฟไลน์',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: seeder.isOnline
-                                      ? AppColors.success
-                                      : AppColors.textMuted,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (seeder.chunksBitmap == 'all')
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color:
-                                  AppColors.success.withValues(alpha: 0.1),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: const Text(
-                              'Full',
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                                color: AppColors.success,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                )
-                    .animate()
-                    .fadeIn(
-                      duration: 300.ms,
-                      delay: (300 + index.clamp(0, 10) * 50).ms,
-                    )
-                    .slideX(begin: 0.05, end: 0);
-              }),
-          ],
-        ),
-      ),
+                  const SizedBox(width: 16),
+                  Expanded(flex: 4, child: download),
+                ],
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                download,
+                const SizedBox(height: 16),
+                details,
+                const SizedBox(height: 16),
+                seeders,
+              ],
+            );
+          }).animate().fadeIn(delay: 80.ms, duration: 320.ms),
+        ],
+      ],
     );
   }
 
-  Widget _buildDownloadSeedCard(BtFile file) {
+  int _onlineCount(BtFile f) => _seedersLoaded
+      ? _seeders.where((s) => s.isOnline).length
+      : f.onlineSeedersCount;
+
+  String? _dateOf(BtFile f) {
+    final d = f.createdAt?.toLocal();
+    return d == null ? null : '${d.day}/${d.month}/${d.year}';
+  }
+
+  Widget _hero(BtFile f) {
+    final p = context.m3;
+    final narrow = MediaQuery.sizeOf(context).width < 700;
+    final seeding = t.seedingFileHashes.contains(f.fileHash);
+    final online = _onlineCount(f);
+    final hasLocal = _savedPathFor(f) != null;
+    final downloadingThis =
+        t.isDownloadingFile && _activeDownloadHash == f.fileHash;
+    final canDownload = _seedersLoaded &&
+        online > 0 &&
+        !t.isDownloadingFile &&
+        !_preparing;
+    final date = _dateOf(f);
+    final uploader = f.uploaderDisplayName;
+    final showFileName =
+        f.title != null && f.title!.isNotEmpty && f.title != f.fileName;
+
+    final iconSize = narrow ? 88.0 : 128.0;
+    final icon = TorrentFileThumb.hasImage(f)
+        ? TorrentFileThumb(file: f, size: iconSize)
+        : Icon3D(
+            M3Icons.file,
+            size: iconSize,
+            glow: seeding ? p.green.withValues(alpha: 0.4) : p.logoGlow,
+          );
+
+    final metrics = <(String, String, Color?)>[
+      ('ขนาด', f.fileSizeFormatted, null),
+      ('ดาวน์โหลด', '${f.downloadCount}', null),
+      ('Seeder ออนไลน์', '$online', online > 0 ? p.green : p.red),
+    ];
+
+    final info = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          f.displayTitle,
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontFamily: M3Fonts.head,
+            fontSize: narrow ? 21 : 27,
+            fontWeight: FontWeight.w700,
+            height: 1.2,
+            color: p.text,
+            shadows: p.titleShadow,
+          ),
+        ),
+        if (showFileName) ...[
+          const SizedBox(height: 3),
+          Text(
+            f.fileName,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: M3Text.mono(context, size: 12.5, color: p.text3),
+          ),
+        ],
+        const SizedBox(height: 6),
+        Text(
+          'โดย ${uploader == null || uploader.isEmpty ? 'ไม่ทราบชื่อ' : uploader}'
+          '${date == null ? '' : ' · $date'}',
+          style: M3Text.sub(context),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            if (f.category != null)
+              M3Tag(f.category!.name,
+                  tone: M3Tone.gold,
+                  icon: torrentCategoryGlyph(f.category!.icon)),
+            if (f.category?.isAdult == true)
+              const M3Tag('18+', tone: M3Tone.red),
+            if (seeding)
+              const M3Tag('กำลัง Seed อยู่', tone: M3Tone.green, dot: true),
+            if (hasLocal)
+              const M3Tag('มีในเครื่องแล้ว',
+                  tone: M3Tone.cyan, icon: Icons.check_circle_rounded),
+            if (_isLoading) const TorrentMiniSpinner(size: 16),
+          ],
+        ),
+        const SizedBox(height: 14),
+        Wrap(
+          spacing: narrow ? 20 : 32,
+          runSpacing: 10,
+          children: [
+            for (final (label, value, color) in metrics)
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(value,
+                      style: M3Text.num(context,
+                          size: narrow ? 21 : 26,
+                          color: color,
+                          red: color == p.red)),
+                  Text(label,
+                      style: M3Text.sub(context).copyWith(fontSize: 11.5)),
+                ],
+              ),
+          ],
+        ),
+      ],
+    );
+
+    final actions = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        GlossButton(
+          label: downloadingThis
+              ? 'กำลังดาวน์โหลด ${(t.downloadProgress * 100).toStringAsFixed(0)}%'
+              : (online > 0 ? 'ดาวน์โหลด ($online Seeder)' : 'ดาวน์โหลด'),
+          icon3d: M3Icons.download,
+          size: GlossSize.large,
+          expand: true,
+          loading: downloadingThis || _preparing,
+          tooltip: online == 0 ? 'ต้องมี Seeder ออนไลน์จึงจะดาวน์โหลดได้' : null,
+          onPressed: canDownload ? () => _download(f) : null,
+        ),
+        const SizedBox(height: 10),
+        GlossButton(
+          label: seeding ? 'กำลัง Seed อยู่' : 'ลงทะเบียนเป็น Seeder',
+          icon: Icons.cloud_upload_rounded,
+          variant: seeding ? GlossVariant.green : GlossVariant.glass,
+          expand: true,
+          loading: _isRegistering,
+          onPressed: _isRegistering ? null : () => _seed(f),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: GlossButton(
+                label: 'คัดลอก Hash',
+                icon: Icons.copy_rounded,
+                size: GlossSize.small,
+                variant: GlossVariant.glass,
+                expand: true,
+                onPressed: () => _copyHash(f),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: GlossButton(
+                label: 'Magnet Link',
+                icon: Icons.link_rounded,
+                size: GlossSize.small,
+                variant: GlossVariant.glass,
+                expand: true,
+                onPressed: () => _copyMagnet(f),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+
+    return GlassPanel(
+      highlight: true,
+      gloss: false,
+      radius: 24,
+      accent: downloadingThis
+          ? p.cyan
+          : (seeding ? p.green : null),
+      padding: EdgeInsets.all(narrow ? 16 : 22),
+      child: narrow
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    icon,
+                    const SizedBox(width: 14),
+                    Expanded(child: info),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                actions,
+              ],
+            )
+          : Row(
+              children: [
+                icon,
+                const SizedBox(width: 22),
+                Expanded(child: info),
+                const SizedBox(width: 18),
+                SizedBox(width: 270, child: actions),
+              ],
+            ),
+    );
+  }
+
+  Widget _downloadCard(BtFile f) {
+    final p = context.m3;
     final onlineSeeders = _seeders.where((s) => s.isOnline).toList();
-    final hasOnlineSeeders = onlineSeeders.isNotEmpty;
+    final online = _onlineCount(f);
+    final downloadingThis =
+        t.isDownloadingFile && _activeDownloadHash == f.fileHash;
+    final busyOther = t.isDownloadingFile && !downloadingThis;
+    final pct = (t.downloadProgress * 100).clamp(0, 100).toStringAsFixed(0);
+    final saved = _savedPathFor(f);
+    final dir = _saveDir;
+    final shownPath = saved ??
+        dir ??
+        (isWindows ? r'Documents\LocalVPN\Torrent' : 'LocalVPN/Torrent');
 
-    return GlassCard(
-      padding: const EdgeInsets.all(16),
-      borderColor: hasOnlineSeeders
-          ? AppColors.success.withValues(alpha: 0.3)
-          : AppColors.cardBorder,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    Widget status;
+    if (downloadingThis) {
+      status = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Download button (via server relay)
-          if (hasOnlineSeeders && !widget.torrentService.isDownloadingFile)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: SizedBox(
-                width: double.infinity,
-                height: 44,
-                child: ElevatedButton.icon(
-                  onPressed: () async {
-                    final path = await widget.torrentService.downloadFile(file, onlineSeeders);
-                    if (!mounted) return;
-                    if (path != null) {
-                      SoundService().play(SfxType.coin);
-                      HapticFeedback.heavyImpact();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('ดาวน์โหลดสำเร็จ: ${file.displayTitle}'),
-                          backgroundColor: AppColors.success,
-                        ),
-                      );
-                      _loadDetail();
-                    } else if (widget.torrentService.downloadError != null) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(widget.torrentService.downloadError!),
-                          backgroundColor: AppColors.error,
-                        ),
-                      );
-                    }
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.success,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  icon: const Icon(Icons.download, color: Colors.white, size: 20),
-                  label: Text('ดาวน์โหลด (${onlineSeeders.length} seeders)'),
-                ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: Text('กำลังดาวน์โหลด…', style: M3Text.h3(context)),
               ),
-            ),
+              Text('$pct%', style: M3Text.num(context, size: 24)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          M3ProgressBar(value: t.downloadProgress),
+          const SizedBox(height: 6),
+          Text(
+            'ออกจากหน้านี้ได้ ระบบจะดาวน์โหลดต่อเบื้องหลัง — อย่าปิดแอปจนกว่าจะเสร็จ',
+            style: M3Text.sub(context).copyWith(fontSize: 12),
+          ),
+        ],
+      );
+    } else if (busyOther) {
+      status = const M3Banner(
+        tone: M3Tone.amber,
+        icon: Icons.hourglass_top_rounded,
+        title: 'กำลังดาวน์โหลดไฟล์อื่นอยู่',
+        message: 'ดาวน์โหลดได้ทีละไฟล์ — รอให้ไฟล์ก่อนหน้าเสร็จก่อน',
+      );
+    } else if (_seedersLoaded && online == 0) {
+      status = const M3Banner(
+        tone: M3Tone.amber,
+        icon3d: M3Icons.relay,
+        title: 'ยังไม่มี Seeder ออนไลน์',
+        message: 'ต้องมี Seeder ออนไลน์จึงจะดาวน์โหลดได้ (ผ่าน server relay)',
+      );
+    } else if (!_seedersLoaded) {
+      status = const M3Banner(
+        tone: M3Tone.cyan,
+        icon3d: M3Icons.relay,
+        title: 'กำลังตรวจหา Seeder…',
+      );
+    } else {
+      status = M3Banner(
+        tone: M3Tone.green,
+        icon3d: M3Icons.p2pDirect,
+        title: saved != null ? 'ดาวน์โหลดแล้ว' : 'พร้อมดาวน์โหลด',
+        message: 'มี Seeder ออนไลน์ $online เครื่อง',
+      );
+    }
 
-          // Download progress
-          if (widget.torrentService.isDownloadingFile)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Column(
-                children: [
-                  LinearProgressIndicator(
-                    value: widget.torrentService.downloadProgress,
-                    backgroundColor: AppColors.surfaceLight,
-                    valueColor: AlwaysStoppedAnimation<Color>(AppColors.success),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'กำลังดาวน์โหลด ${(widget.torrentService.downloadProgress * 100).toStringAsFixed(0)}%',
-                    style: TextStyle(color: AppColors.textMuted, fontSize: 11),
-                  ),
-                ],
-              ),
-            ),
-
-          if (!hasOnlineSeeders && !widget.torrentService.isDownloadingFile)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Row(
-                children: [
-                  Icon(Icons.info_outline, size: 14, color: AppColors.textMuted),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      'ต้องมี Seeder ออนไลน์จึงจะดาวน์โหลดได้ (ผ่าน server relay)',
-                      style: TextStyle(color: AppColors.textMuted, fontSize: 11),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          // Seed button (register yourself as seeder for a file you have)
-          SizedBox(
-            width: double.infinity,
-            height: 44,
-            child: ElevatedButton.icon(
-              onPressed: _isRegistering
-                  ? null
-                  : () async {
-                      setState(() => _isRegistering = true);
-                      try {
-                        final success =
-                            await widget.torrentService.registerSeeder(
-                          fileHash: file.fileHash,
-                        );
-                        if (!mounted) return;
-                        if (success) {
-                          SoundService().play(SfxType.coin);
-                          HapticFeedback.mediumImpact();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('ลงทะเบียนเป็น Seeder แล้ว'),
-                              backgroundColor: AppColors.success,
-                            ),
-                          );
-                          _loadDetail();
-                        } else {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                widget.torrentService.error ??
-                                    'ลงทะเบียนไม่สำเร็จ',
-                              ),
-                              backgroundColor: AppColors.error,
-                            ),
-                          );
-                        }
-                      } catch (e) {
-                        if (!mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              'เกิดข้อผิดพลาด: ${e.toString().replaceFirst(RegExp(r'^Exception:\s*'), '')}',
-                            ),
-                            backgroundColor: AppColors.error,
+    return GlassPanel(
+      accent: downloadingThis ? p.cyan.withValues(alpha: 0.8) : null,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const M3CardHeader(
+            icon3d: M3Icons.download,
+            title: 'ดาวน์โหลดผ่าน Server Relay',
+            subtitle: 'ขอชิ้นส่วนไฟล์จาก Seeder ผ่านเซิร์ฟเวอร์ แล้วตรวจ SHA-256 ก่อนบันทึก',
+          ),
+          const SizedBox(height: 14),
+          status,
+          const SizedBox(height: 14),
+          M3Inset(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const Icon3D(M3Icons.folder, size: 32),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            saved != null ? 'บันทึกไว้ที่' : 'ไฟล์จะถูกบันทึกที่',
+                            style: M3Text.sub(context).copyWith(fontSize: 11.5),
                           ),
-                        );
-                      } finally {
-                        if (mounted) {
-                          setState(() => _isRegistering = false);
-                        }
-                      }
-                    },
-              style: ElevatedButton.styleFrom(
-                backgroundColor:
-                    hasOnlineSeeders ? AppColors.success : AppColors.primary,
-                disabledBackgroundColor:
-                    AppColors.primary.withValues(alpha: 0.3),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              icon: _isRegistering
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
+                          Text(
+                            _display(shownPath),
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                            style: M3Text.mono(context,
+                                size: 12.5, color: p.text2),
+                          ),
+                        ],
                       ),
-                    )
-                  : const Icon(Icons.cloud_upload_outlined, color: Colors.white, size: 20),
-              label: Text(
-                widget.torrentService.seedingFileHashes.contains(file.fileHash)
-                    ? 'กำลัง Seed อยู่'
-                    : 'ลงทะเบียนเป็น Seeder',
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
+                    ),
+                  ],
                 ),
-              ),
+                if (saved != null || (isDesktop && dir != null)) ...[
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      if (saved != null)
+                        GlossButton(
+                          label: 'เปิดไฟล์',
+                          icon: Icons.open_in_new_rounded,
+                          size: GlossSize.small,
+                          onPressed: () => _openPath(saved),
+                        ),
+                      if (isDesktop && dir != null)
+                        GlossButton(
+                          label: 'เปิดโฟลเดอร์',
+                          icon: Icons.folder_open_rounded,
+                          size: GlossSize.small,
+                          variant: GlossVariant.glass,
+                          onPressed: _openFolder,
+                        ),
+                    ],
+                  ),
+                ],
+              ],
             ),
           ),
-
-          // Show online seeder IPs
-          if (hasOnlineSeeders) ...[
-            const SizedBox(height: 12),
-            const Text(
-              'P2P Peers',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textSecondary,
-              ),
-            ),
+          if (onlineSeeders.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            Text('P2P Peers', style: M3Text.label(context)),
             const SizedBox(height: 6),
-            ...onlineSeeders.map((seeder) {
-              final addr = seeder.publicIp != null && seeder.publicPort != null
-                  ? '${seeder.publicIp}:${seeder.publicPort}'
-                  : 'ไม่ทราบ IP';
-              return Padding(
+            for (final s in onlineSeeders)
+              Padding(
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Row(
                   children: [
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: const BoxDecoration(
-                        color: AppColors.success,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
+                    StatusOrb(color: p.green, size: 8, pulse: false),
                     const SizedBox(width: 8),
-                    Text(
-                      addr,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontFamily: 'monospace',
-                        color: AppColors.textSecondary,
+                    Expanded(
+                      child: Text(
+                        s.publicIp != null && s.publicPort != null
+                            ? '${s.publicIp}:${s.publicPort}'
+                            : 'ไม่ทราบ IP',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: M3Text.mono(context, size: 12.5),
                       ),
                     ),
                   ],
                 ),
-              );
-            }),
+              ),
           ],
         ],
-      ),
-    ).animate().fadeIn(duration: 400.ms, delay: 220.ms);
-  }
-
-  Widget _buildStatBadge(IconData icon, String text, Color color) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: color.withValues(alpha: 0.2)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: color, size: 14),
-            const SizedBox(width: 4),
-            Flexible(
-              child: Text(
-                text,
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  color: color,
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
 
-  Widget _buildMetaRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
+  Widget _detailsCard(BtFile f) {
+    final p = context.m3;
+    final desc = f.description?.trim() ?? '';
+    final date = _dateOf(f);
+    final uploader = f.uploaderDisplayName;
+    final shortHash = f.fileHash.length >= 16
+        ? '${f.fileHash.substring(0, 16)}…'
+        : f.fileHash;
+
+    return GlassPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(
-            label,
-            style: const TextStyle(
-              fontSize: 12,
-              color: AppColors.textMuted,
-            ),
-          ),
-          const Spacer(),
-          Flexible(
-            child: Text(
-              value,
-              style: const TextStyle(
-                fontSize: 12,
-                color: AppColors.textSecondary,
+          const M3CardHeader(icon3d: M3Icons.file, title: 'ข้อมูลไฟล์'),
+          const SizedBox(height: 12),
+          if (desc.isNotEmpty) ...[
+            Text('รายละเอียด', style: M3Text.label(context)),
+            const SizedBox(height: 6),
+            M3Inset(
+              child: SelectableText(
+                desc,
+                style: M3Text.body(context)
+                    .copyWith(fontSize: 13.5, color: p.text2, height: 1.55),
               ),
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.end,
+            ),
+            const SizedBox(height: 12),
+          ],
+          M3KeyValue('ผู้อัพโหลด',
+              uploader == null || uploader.isEmpty ? 'ไม่ทราบชื่อ' : uploader),
+          if (f.category != null) M3KeyValue('หมวดหมู่', f.category!.name),
+          if (date != null) M3KeyValue('อัพโหลดเมื่อ', date),
+          M3KeyValue('ขนาด', f.fileSizeFormatted),
+          M3KeyValue('ชื่อไฟล์', f.fileName, mono: true),
+          if (f.chunkSize != null)
+            M3KeyValue('Chunk Size', '${f.chunkSize} bytes', mono: true),
+          if (f.totalChunks != null)
+            M3KeyValue('Total Chunks', '${f.totalChunks}', mono: true),
+          M3KeyValue(
+            'Hash',
+            shortHash,
+            mono: true,
+            trailing: GlossIconButton(
+              icon: Icons.copy_rounded,
+              size: 28,
+              tooltip: 'คัดลอก File Hash',
+              onPressed: () => _copyHash(f),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _seedersCard() {
+    final p = context.m3;
+    final online = _seeders.where((s) => s.isOnline).length;
+    final sorted = [..._seeders]
+      ..sort((a, b) => (b.isOnline ? 1 : 0).compareTo(a.isOnline ? 1 : 0));
+
+    return GlassPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          M3CardHeader(
+            icon3d: M3Icons.p2pDirect,
+            title: 'Seeders',
+            subtitle: _seeders.isEmpty
+                ? null
+                : 'ออนไลน์ $online จาก ${_seeders.length} เครื่อง',
+            trailing: _isLoading
+                ? const TorrentMiniSpinner()
+                : GlossIconButton(
+                    icon: Icons.refresh_rounded,
+                    tooltip: 'รีเฟรช',
+                    onPressed: _loadDetail,
+                  ),
+          ),
+          const SizedBox(height: 12),
+          if (!_seedersLoaded)
+            const M3EmptyState(
+              icon3d: M3Icons.relay,
+              title: 'กำลังโหลดรายชื่อ Seeder…',
+            )
+          else if (_seeders.isEmpty)
+            const M3EmptyState(
+              icon3d: M3Icons.relay,
+              title: 'ไม่มี seeder ออนไลน์',
+              message: 'เมื่อมีคนแชร์ไฟล์นี้ รายชื่อจะแสดงที่นี่',
+            )
+          else
+            for (final s in sorted)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: M3Row(
+                  leading: Icon3D(M3Icons.devicePc,
+                      size: 36, opacity: s.isOnline ? 1 : 0.45),
+                  title: s.displayName ?? s.machineId,
+                  subtitleWidget: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (s.publicIp != null && s.publicPort != null)
+                        Text('${s.publicIp}:${s.publicPort}',
+                            style: M3Text.mono(context, size: 12)),
+                      Text(
+                        s.machineId,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: M3Text.mono(context, size: 10.5, color: p.text3),
+                      ),
+                    ],
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (s.chunksBitmap == 'all') ...[
+                        const M3Tag('Full', tone: M3Tone.green),
+                        const SizedBox(width: 6),
+                      ],
+                      M3Tag(
+                        s.isOnline ? 'ออนไลน์' : 'ออฟไลน์',
+                        tone: s.isOnline ? M3Tone.green : M3Tone.neutral,
+                        dot: true,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
         ],
       ),
     );

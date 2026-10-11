@@ -2,15 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
-import '../../services/sound_service.dart';
+import '../../models/bt_models.dart';
 import '../../services/torrent_service.dart';
-import '../../theme/app_theme.dart';
-import '../../widgets/cyber_page_route.dart';
-import '../../widgets/glass_card.dart';
-import '../../widgets/neon_button.dart';
+import '../../widgets/m3/m3.dart';
 import 'kyc_verification_screen.dart';
 import 'trophy_screen.dart';
 
+/// "โปรไฟล์" — the Torrent profile: name, rank and score in a chrome-ringed
+/// hero, sharing stats, earned trophies and the KYC (18+) status.
 class UserProfileScreen extends StatefulWidget {
   final TorrentService torrentService;
 
@@ -24,550 +23,618 @@ class UserProfileScreen extends StatefulWidget {
 }
 
 class _UserProfileScreenState extends State<UserProfileScreen> {
+  TorrentService get t => widget.torrentService;
+
+  bool _initialLoad = true;
+  bool _refreshing = false;
+
   @override
   void initState() {
     super.initState();
-    widget.torrentService.addListener(_onChanged);
-    _loadData();
+    t.addListener(_onChanged);
+    _firstLoad();
   }
 
-  Future<void> _loadData() async {
-    await Future.wait([
-      widget.torrentService.fetchUserProfile(),
-      widget.torrentService.fetchKycStatus(),
-    ]);
+  @override
+  void dispose() {
+    t.removeListener(_onChanged);
+    super.dispose();
   }
 
   void _onChanged() {
     if (mounted) setState(() {});
   }
 
-  @override
-  void dispose() {
-    widget.torrentService.removeListener(_onChanged);
-    super.dispose();
+  Future<void> _loadData() async {
+    await Future.wait([
+      t.fetchUserProfile(),
+      t.fetchKycStatus(),
+    ]);
+  }
+
+  Future<void> _firstLoad() async {
+    await _loadData();
+    if (!mounted) return;
+    setState(() => _initialLoad = false);
+  }
+
+  Future<void> _refresh() async {
+    if (_refreshing || _initialLoad) return;
+    setState(() => _refreshing = true);
+    await _loadData();
+    if (!mounted) return;
+    setState(() => _refreshing = false);
+  }
+
+  void _openTrophies() {
+    Navigator.of(context).push(M3PageRoute(
+      builder: (_) => TrophyScreen(torrentService: t),
+    ));
+  }
+
+  void _openKyc() {
+    HapticFeedback.mediumImpact();
+    Navigator.of(context).push(M3PageRoute(
+      builder: (_) => KycVerificationScreen(torrentService: t),
+    ));
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: Container(
-        decoration: BoxDecoration(gradient: AppTheme.backgroundGradient),
-        child: SafeArea(
-          child: Column(
-            children: [
-              _buildAppBar(),
-              Expanded(
-                child: RefreshIndicator(
-                  onRefresh: _loadData,
-                  color: AppColors.primary,
-                  backgroundColor: AppColors.surface,
-                  child: SingleChildScrollView(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _buildProfileHeader(),
-                        const SizedBox(height: 16),
-                        _buildStatsGrid(),
-                        const SizedBox(height: 16),
-                        _buildTrophySection(),
-                        const SizedBox(height: 16),
-                        _buildKycSection(),
-                      ],
+    final stats = t.userStats;
+    final busy = _initialLoad || _refreshing;
+
+    return M3PageBody(
+      onRefresh: _refresh,
+      children: [
+        M3PageHeader(
+          icon3d: M3Icons.profile,
+          title: 'โปรไฟล์',
+          subtitle: 'สถิติการแชร์ไฟล์ ถ้วยรางวัล และการยืนยันตัวตน',
+          onBack: () => Navigator.of(context).pop(),
+          trailing: _RefreshButton(busy: busy, onPressed: _refresh),
+        ),
+        const SizedBox(height: 16),
+        if (stats == null && _initialLoad)
+          const _LoadingPanel(message: 'กำลังโหลดโปรไฟล์…')
+        else ...[
+          if (stats == null) ...[
+            M3Banner(
+              tone: M3Tone.amber,
+              icon3d: M3Icons.profile,
+              title: 'ยังโหลดสถิติไม่ได้',
+              message: 'ตรวจสอบการเชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่ '
+                  '(ยังดูถ้วยรางวัลและยืนยันตัวตนได้ตามปกติ)',
+              action: GlossButton(
+                label: 'ลองใหม่',
+                size: GlossSize.small,
+                variant: GlossVariant.glass,
+                loading: _refreshing,
+                onPressed: _refreshing ? null : _refresh,
+              ),
+            ),
+            const SizedBox(height: 14),
+          ],
+          _Hero(
+            stats: stats,
+            trophies: t.userTrophies,
+            kycStatus: t.kycStatus,
+          ).animate().fadeIn(duration: 350.ms).slideY(begin: 0.04, end: 0),
+          const SizedBox(height: 16),
+          LayoutBuilder(builder: (context, c) {
+            final wide = c.maxWidth >= 980;
+            final statsBlock = Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const M3SectionTitle('สถิติ'),
+                _StatGrid(stats: stats, wide: wide),
+              ],
+            ).animate().fadeIn(delay: 80.ms, duration: 350.ms);
+            final side = Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _TrophyCard(trophies: t.userTrophies, onOpen: _openTrophies),
+                const SizedBox(height: 16),
+                _KycCard(status: t.kycStatus, onVerify: _openKyc),
+              ],
+            ).animate().fadeIn(delay: 140.ms, duration: 350.ms);
+
+            if (wide) {
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 5, child: statsBlock),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    flex: 4,
+                    child: Padding(
+                      // Line up with the cards under the section title.
+                      padding: const EdgeInsets.only(top: 38),
+                      child: side,
                     ),
                   ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+                ],
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                statsBlock,
+                const SizedBox(height: 16),
+                side,
+              ],
+            );
+          }),
+        ],
+      ],
+    );
+  }
+}
+
+// ── KYC wording ─────────────────────────────────────────────────────────
+
+(M3Tone, String) _kycInfo(String? status) => switch (status) {
+      'approved' => (M3Tone.green, 'ยืนยันตัวตนแล้ว'),
+      'pending' => (M3Tone.amber, 'รอการอนุมัติ'),
+      'rejected' => (M3Tone.red, 'ถูกปฏิเสธ'),
+      _ => (M3Tone.neutral, 'ยังไม่ได้ยืนยัน'),
+    };
+
+// ── Hero ────────────────────────────────────────────────────────────────
+
+class _Hero extends StatelessWidget {
+  final BtUserStats? stats;
+  final List<BtTrophy> trophies;
+  final String? kycStatus;
+
+  const _Hero({
+    required this.stats,
+    required this.trophies,
+    required this.kycStatus,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, c) => _build(context, narrow: c.maxWidth < 760),
     );
   }
 
-  Widget _buildAppBar() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 8, 20, 0),
-      child: Row(
-        children: [
-          IconButton(
-            icon: const Icon(Icons.arrow_back_ios,
-                color: AppColors.primary, size: 20),
-            onPressed: () {
-              SoundService().play(SfxType.swoosh);
-              Navigator.pop(context);
-            },
-          ),
-          const SizedBox(width: 4),
-          const Expanded(
-            child: Text(
-              'โปรไฟล์',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: AppColors.textPrimary,
-              ),
-            ),
-          ),
-        ],
-      ),
-    ).animate().slideY(begin: -0.3, end: 0, duration: 400.ms);
-  }
+  Widget _build(BuildContext context, {required bool narrow}) {
+    final p = context.m3;
+    final s = stats;
+    final rank = s?.rankPosition ?? 0;
+    final (kycTone, kycText) = _kycInfo(kycStatus);
+    final name = (s?.displayName?.trim().isNotEmpty ?? false)
+        ? s!.displayName!.trim()
+        : 'ไม่ระบุชื่อ';
 
-  Widget _buildProfileHeader() {
-    final stats = widget.torrentService.userStats;
-    final trophies = widget.torrentService.userTrophies;
+    final metrics = <(String, String, Color?)>[
+      ('อันดับ', rank > 0 ? '#$rank' : '—', rank > 0 ? p.gold : null),
+      ('สกอร์', s == null ? '—' : '${s.score}', null),
+      ('ถ้วยรางวัล', '${trophies.length}', null),
+    ];
 
-    return GlassCard(
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  gradient: AppTheme.primaryGradient,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: const Icon(
-                  Icons.person,
-                  color: Colors.white,
-                  size: 28,
-                ),
-              )
-                  .animate(onPlay: (c) => c.repeat(reverse: true))
-                  .shimmer(
-                    duration: 3000.ms,
-                    color: Colors.white.withValues(alpha: 0.15),
-                  ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            stats?.displayName ?? 'Unknown',
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
-                        ),
-                        if (trophies.isNotEmpty) ...[
-                          const SizedBox(width: 6),
-                          Text(
-                            trophies
-                                .map((t) => t.badgeText)
-                                .take(5)
-                                .join(''),
-                            style: const TextStyle(fontSize: 14),
-                          ),
-                        ],
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color:
-                                AppColors.warning.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            'อันดับ #${stats?.rankPosition ?? '-'}',
-                            style: const TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.warning,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color:
-                                AppColors.primary.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            'สกอร์ ${stats?.score ?? 0}',
-                            style: const TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.primary,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    ).animate().fadeIn(duration: 400.ms, delay: 100.ms);
-  }
+    final avatar = _ChromeAvatar(size: narrow ? 84 : 124);
 
-  Widget _buildStatsGrid() {
-    final stats = widget.torrentService.userStats;
-
-    return Column(
+    final nameBlock = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'สถิติ',
+        Text(
+          name,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
           style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w600,
-            color: AppColors.textPrimary,
+            fontFamily: M3Fonts.head,
+            fontSize: narrow ? 22 : 30,
+            fontWeight: FontWeight.w700,
+            color: p.text,
+            height: 1.2,
+            shadows: p.titleShadow,
           ),
-        ).animate().fadeIn(duration: 300.ms, delay: 150.ms),
-        const SizedBox(height: 10),
-        Row(
-          children: [
-            Expanded(
-              child: _buildStatCard(
-                Icons.upload,
-                'อัพโหลด',
-                stats?.uploadFormatted ?? '0 B',
-                AppColors.success,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _buildStatCard(
-                Icons.download,
-                'ดาวน์โหลด',
-                stats?.downloadFormatted ?? '0 B',
-                AppColors.primary,
-              ),
-            ),
-          ],
         ),
-        const SizedBox(height: 10),
-        Row(
+        if (trophies.isNotEmpty) ...[
+          const SizedBox(height: 2),
+          Text(
+            trophies.map((x) => x.badgeText).take(5).join(''),
+            style: const TextStyle(fontSize: 16),
+          ),
+        ],
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
           children: [
-            Expanded(
-              child: _buildStatCard(
-                Icons.file_upload,
-                'ไฟล์แชร์',
-                '${stats?.totalFilesShared ?? 0}',
-                const Color(0xFFFF6B6B),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _buildStatCard(
-                Icons.file_download,
-                'ไฟล์ดาวน์โหลด',
-                '${stats?.totalFilesDownloaded ?? 0}',
-                const Color(0xFF45B7D1),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        Row(
-          children: [
-            Expanded(
-              child: _buildStatCard(
-                Icons.timer,
-                'เวลา Seed',
-                stats?.seedTimeFormatted ?? '0m',
-                AppColors.warning,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _buildStatCard(
-                Icons.sync,
-                'Ratio',
-                stats?.ratio.toStringAsFixed(2) ?? '0.00',
-                AppColors.secondary,
-              ),
-            ),
+            M3Tag(rank > 0 ? 'อันดับ #$rank' : 'ยังไม่มีอันดับ',
+                tone: M3Tone.gold),
+            M3Tag('สกอร์ ${s?.score ?? 0}', tone: M3Tone.cyan),
+            M3Tag('KYC: $kycText', tone: kycTone, dot: true),
           ],
         ),
       ],
     );
-  }
 
-  Widget _buildStatCard(
-      IconData icon, String label, String value, Color color) {
-    return GlassCard(
-      padding: const EdgeInsets.all(14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    final metricRow = Wrap(
+      spacing: narrow ? 22 : 34,
+      runSpacing: 10,
+      children: [
+        for (final (label, value, color) in metrics)
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(icon, color: color, size: 18),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: AppColors.textMuted,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
+              Text(value,
+                  style: M3Text.num(context,
+                      size: narrow ? 22 : 28, color: color)),
+              Text(label,
+                  style: M3Text.sub(context).copyWith(fontSize: 11.5)),
             ],
           ),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: color,
+      ],
+    );
+
+    return GlassPanel(
+      highlight: true,
+      gloss: false,
+      radius: 24,
+      accent: kycStatus == 'approved' ? p.green : null,
+      padding: EdgeInsets.all(narrow ? 16 : 22),
+      child: narrow
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    avatar,
+                    const SizedBox(width: 14),
+                    Expanded(child: nameBlock),
+                  ],
+                ),
+                const M3GoldLine(margin: EdgeInsets.symmetric(vertical: 14)),
+                metricRow,
+              ],
+            )
+          : Row(
+              children: [
+                avatar,
+                const SizedBox(width: 22),
+                Expanded(child: nameBlock),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 22),
+                  child: SizedBox(
+                    height: 84,
+                    child: RotatedBox(
+                      quarterTurns: 1,
+                      child: M3GoldLine(margin: EdgeInsets.zero),
+                    ),
+                  ),
+                ),
+                metricRow,
+              ],
+            ),
+    );
+  }
+}
+
+/// The 3D profile icon on a glass plate inside a chrome ring.
+class _ChromeAvatar extends StatelessWidget {
+  final double size;
+  const _ChromeAvatar({required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.m3;
+    return Container(
+      width: size,
+      height: size,
+      padding: EdgeInsets.all(size * 0.045),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: M3Fx.chrome,
+        boxShadow: [BoxShadow(color: p.logoGlow, blurRadius: size * 0.3)],
+      ),
+      child: Container(
+        padding: EdgeInsets.all(size * 0.025),
+        decoration: const BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: M3Fx.goldRing,
+        ),
+        child: ClipOval(
+          child: DecoratedBox(
+            decoration: BoxDecoration(gradient: p.glassFillHi),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                const Positioned.fill(
+                  child: Opacity(
+                    opacity: 0.45,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(gradient: M3Fx.btnGloss),
+                    ),
+                  ),
+                ),
+                Icon3D(M3Icons.profile, size: size * 0.66),
+              ],
             ),
           ),
-        ],
+        ),
       ),
-    ).animate().fadeIn(duration: 400.ms, delay: 200.ms);
+    );
+  }
+}
+
+// ── Stats ───────────────────────────────────────────────────────────────
+
+class _StatGrid extends StatelessWidget {
+  final BtUserStats? stats;
+  final bool wide;
+
+  const _StatGrid({required this.stats, required this.wide});
+
+  static String _ratio(BtUserStats? s) {
+    if (s == null) return '—';
+    if (s.totalDownloadedBytes == 0) {
+      return s.totalUploadedBytes > 0 ? '∞' : '0.00';
+    }
+    return s.ratio.toStringAsFixed(2);
   }
 
-  Widget _buildTrophySection() {
-    final trophies = widget.torrentService.userTrophies;
+  @override
+  Widget build(BuildContext context) {
+    final s = stats;
+    final ratioTone = s == null
+        ? null
+        : (s.totalDownloadedBytes == 0 && s.totalUploadedBytes == 0)
+            ? null
+            : (s.ratio >= 1 ? M3Tone.green : M3Tone.amber);
 
-    return GlassCard(
+    final tiles = [
+      M3StatTile(
+        label: 'อัพโหลด',
+        value: s?.uploadFormatted ?? '—',
+        sub: 'ข้อมูลที่ส่งให้คนอื่น',
+        icon3d: M3Icons.upload,
+        tone: M3Tone.green,
+      ),
+      M3StatTile(
+        label: 'ดาวน์โหลด',
+        value: s?.downloadFormatted ?? '—',
+        sub: 'ข้อมูลที่รับมา',
+        icon3d: M3Icons.download,
+        tone: M3Tone.cyan,
+      ),
+      M3StatTile(
+        label: 'ไฟล์แชร์',
+        value: s == null ? '—' : '${s.totalFilesShared}',
+        sub: 'ไฟล์ที่อัปโหลดเข้าคลัง',
+        icon3d: M3Icons.folder,
+      ),
+      M3StatTile(
+        label: 'ไฟล์ดาวน์โหลด',
+        value: s == null ? '—' : '${s.totalFilesDownloaded}',
+        sub: 'ไฟล์ที่โหลดจากคลัง',
+        icon3d: M3Icons.file,
+      ),
+      M3StatTile(
+        label: 'เวลา Seed',
+        value: s?.seedTimeFormatted ?? '—',
+        sub: 'เวลาที่เปิดแชร์ให้คนอื่น',
+        icon3d: M3Icons.torrent,
+        tone: M3Tone.amber,
+      ),
+      M3StatTile(
+        label: 'Ratio',
+        value: _ratio(s),
+        sub: 'อัปโหลด ÷ ดาวน์โหลด',
+        icon3d: M3Icons.p2pDirect,
+        tone: ratioTone,
+      ),
+    ];
+
+    return LayoutBuilder(builder: (context, c) {
+      final cols = wide
+          ? 2
+          : c.maxWidth >= 860
+              ? 3
+              : c.maxWidth >= 400
+                  ? 2
+                  : 1;
+      const gap = 14.0;
+      final w = (c.maxWidth - gap * (cols - 1)) / cols;
+      return Wrap(
+        spacing: gap,
+        runSpacing: gap,
+        children: [for (final x in tiles) SizedBox(width: w, child: x)],
+      );
+    });
+  }
+}
+
+// ── Trophies preview ────────────────────────────────────────────────────
+
+class _TrophyCard extends StatelessWidget {
+  final List<BtTrophy> trophies;
+  final VoidCallback onOpen;
+
+  const _TrophyCard({required this.trophies, required this.onOpen});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.m3;
+    return GlassPanel(
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              const Icon(Icons.emoji_events,
-                  color: AppColors.warning, size: 20),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: Text(
-                  'ถ้วยรางวัล',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-              ),
-              Text(
-                '${trophies.length} รางวัล',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textMuted,
-                ),
-              ),
-            ],
+          M3CardHeader(
+            icon3d: M3Icons.trophy,
+            title: 'ถ้วยรางวัล',
+            subtitle: '${trophies.length} รางวัล',
           ),
           const SizedBox(height: 12),
           if (trophies.isEmpty)
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.symmetric(vertical: 12),
-                child: Text(
-                  'ยังไม่มีรางวัล เริ่มแชร์ไฟล์เลย!',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: AppColors.textMuted,
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Row(
+                children: [
+                  const Icon3D(M3Icons.trophy, size: 44, opacity: 0.45),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text('ยังไม่มีรางวัล เริ่มแชร์ไฟล์เลย!',
+                        style: M3Text.sub(context).copyWith(fontSize: 13)),
                   ),
-                ),
+                ],
               ),
             )
           else
             Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: trophies.map((trophy) {
-                return Tooltip(
-                  message: '${trophy.name} - ${trophy.description}',
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: AppColors.surfaceLight,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: AppColors.warning.withValues(alpha: 0.2),
+              children: [
+                for (final x in trophies)
+                  Tooltip(
+                    message: '${x.name} - ${x.description}',
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: p.inset,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: p.toneSoftLine(M3Tone.gold)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(x.badgeText,
+                              style: const TextStyle(fontSize: 14)),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              x.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: M3Text.body(context)
+                                  .copyWith(fontSize: 12, color: p.text2),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(trophy.badgeText,
-                            style: const TextStyle(fontSize: 14)),
-                        const SizedBox(width: 4),
-                        Text(
-                          trophy.name,
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: AppColors.textSecondary,
-                          ),
-                        ),
-                      ],
-                    ),
                   ),
-                );
-              }).toList(),
+              ],
             ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: NeonButton(
-              text: 'ดูทั้งหมด',
-              icon: Icons.emoji_events,
-              color: AppColors.secondary,
-              outlined: true,
-              onPressed: () {
-                SoundService().play(SfxType.tap);
-                Navigator.of(context).push(
-                  CyberPageRoute(
-                    builder: (_) => TrophyScreen(
-                      torrentService: widget.torrentService,
-                    ),
-                  ),
-                );
-              },
-            ),
+          const SizedBox(height: 14),
+          GlossButton(
+            label: 'ดูทั้งหมด',
+            icon3d: M3Icons.trophy,
+            variant: GlossVariant.glass,
+            expand: true,
+            onPressed: onOpen,
           ),
         ],
       ),
-    ).animate().fadeIn(duration: 400.ms, delay: 300.ms);
+    );
   }
+}
 
-  Widget _buildKycSection() {
-    final kycStatus = widget.torrentService.kycStatus;
+// ── KYC ─────────────────────────────────────────────────────────────────
 
-    Color statusColor;
-    String statusText;
-    IconData statusIcon;
+class _KycCard extends StatelessWidget {
+  final String? status;
+  final VoidCallback onVerify;
 
-    switch (kycStatus) {
-      case 'approved':
-        statusColor = AppColors.success;
-        statusText = 'ยืนยันตัวตนแล้ว';
-        statusIcon = Icons.verified;
-        break;
-      case 'pending':
-        statusColor = AppColors.warning;
-        statusText = 'รอการอนุมัติ';
-        statusIcon = Icons.hourglass_top;
-        break;
-      case 'rejected':
-        statusColor = AppColors.error;
-        statusText = 'ถูกปฏิเสธ';
-        statusIcon = Icons.cancel;
-        break;
-      default:
-        statusColor = AppColors.textMuted;
-        statusText = 'ยังไม่ได้ยืนยัน';
-        statusIcon = Icons.shield_outlined;
-    }
+  const _KycCard({required this.status, required this.onVerify});
 
-    return GlassCard(
+  @override
+  Widget build(BuildContext context) {
+    final p = context.m3;
+    final (tone, text) = _kycInfo(status);
+    final canVerify = status != 'approved' && status != 'pending';
+    return GlassPanel(
+      accent: tone == M3Tone.neutral ? null : p.toneColor(tone),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: statusColor.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(statusIcon, color: statusColor, size: 20),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'ยืนยันตัวตน (KYC)',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textPrimary,
-                      ),
-                    ),
-                    Text(
-                      statusText,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: statusColor,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: statusColor.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  statusText,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: statusColor,
-                  ),
-                ),
-              ),
-            ],
+          M3CardHeader(
+            icon3d: M3Icons.kyc,
+            title: 'ยืนยันตัวตน (KYC)',
+            subtitle: 'สำหรับหมวดเนื้อหา 18+',
+            trailing: M3Tag(text, tone: tone, dot: true),
           ),
           const SizedBox(height: 12),
-          const Text(
-            'ยืนยันตัวตนเพื่อเข้าถึงเนื้อหา 18+ ต้องมีอายุ 18 ปีขึ้นไป',
-            style: TextStyle(
-              fontSize: 12,
-              color: AppColors.textMuted,
-            ),
+          Text(
+            status == 'rejected'
+                ? 'ข้อมูลที่ส่งไปไม่ผ่านการตรวจสอบ ส่งข้อมูลใหม่ได้อีกครั้ง '
+                    '— ต้องมีอายุ 18 ปีขึ้นไป'
+                : status == 'pending'
+                    ? 'ส่งข้อมูลแล้ว รอแอดมินตรวจสอบและอนุมัติ'
+                    : status == 'approved'
+                        ? 'ยืนยันอายุเรียบร้อย เข้าถึงเนื้อหา 18+ ได้แล้ว'
+                        : 'ยืนยันตัวตนเพื่อเข้าถึงเนื้อหา 18+ ต้องมีอายุ 18 ปีขึ้นไป',
+            style: M3Text.sub(context).copyWith(fontSize: 13),
           ),
-          if (kycStatus != 'approved' && kycStatus != 'pending') ...[
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: NeonButton(
-                text: 'ยืนยันตัวตน',
-                icon: Icons.badge,
-                color: AppColors.primary,
-                outlined: true,
-                onPressed: () {
-                  SoundService().play(SfxType.tapHeavy);
-                  HapticFeedback.mediumImpact();
-                  Navigator.of(context).push(
-                    CyberPageRoute(
-                      builder: (_) => KycVerificationScreen(
-                        torrentService: widget.torrentService,
-                      ),
-                    ),
-                  );
-                },
-              ),
+          if (canVerify) ...[
+            const SizedBox(height: 14),
+            GlossButton(
+              label: status == 'rejected' ? 'ยืนยันตัวตนอีกครั้ง' : 'ยืนยันตัวตน',
+              icon3d: M3Icons.kyc,
+              expand: true,
+              onPressed: onVerify,
             ),
           ],
         ],
       ),
-    ).animate().fadeIn(duration: 400.ms, delay: 400.ms);
+    );
+  }
+}
+
+// ── Shared bits ─────────────────────────────────────────────────────────
+
+class _RefreshButton extends StatelessWidget {
+  final bool busy;
+  final VoidCallback onPressed;
+
+  const _RefreshButton({required this.busy, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    if (busy) {
+      return const SizedBox(
+        width: 34,
+        height: 34,
+        child: Padding(
+          padding: EdgeInsets.all(8),
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
+    return GlossIconButton(
+      icon: Icons.refresh_rounded,
+      tooltip: 'รีเฟรช',
+      onPressed: onPressed,
+    );
+  }
+}
+
+class _LoadingPanel extends StatelessWidget {
+  final String message;
+  const _LoadingPanel({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassPanel(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 44),
+        child: Column(
+          children: [
+            const SizedBox(
+              width: 34,
+              height: 34,
+              child: CircularProgressIndicator(strokeWidth: 3),
+            ),
+            const SizedBox(height: 14),
+            Text(message, style: M3Text.sub(context)),
+          ],
+        ),
+      ),
+    );
   }
 }

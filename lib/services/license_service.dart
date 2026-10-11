@@ -525,6 +525,13 @@ class LicenseService extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── Screenshot demo data (lib/dev/shot_harness.dart only) ──
+  void debugSetState(LicenseState state) {
+    _state = state;
+    _deviceId = state.deviceId;
+    notifyListeners();
+  }
+
   /// Set free mode for users without a license.
   /// Preserves any existing license key (e.g. free license from backend).
   void setFreeMode() {

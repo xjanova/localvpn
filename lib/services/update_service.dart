@@ -1,17 +1,23 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class UpdateService extends ChangeNotifier {
   static const String _checkUpdateUrl =
       'https://xman4289.com/api/v1/product/localvpn/update/check';
   static const String _prefLastUpdateCheck = 'last_update_check';
+
+  /// Product page with every download (used when the server has no
+  /// Windows installer to hand out yet).
+  static const String downloadPageUrl = 'https://xman4289.com/localvpn/download';
   static const Duration _checkInterval = Duration(hours: 6);
 
   /// MethodChannel for native APK installation
@@ -31,6 +37,21 @@ class UpdateService extends ChangeNotifier {
 
   String? _changelog;
   String? get changelog => _changelog;
+
+  /// SHA-256 the server promised for the latest file (null = unknown).
+  String? _sha256;
+
+  /// Windows: true when the server offers a Windows installer we can run.
+  /// False means the update can only be fetched from the download page.
+  bool get canInstallInApp {
+    if (!Platform.isWindows) return true;
+    final url = _downloadUrl?.toLowerCase() ?? '';
+    return url.endsWith('.exe') || url.contains('/download/windows');
+  }
+
+  /// Windows: called after the installer has been started so the app can
+  /// close itself (the installer replaces the running files).
+  Future<void> Function()? onInstallerStarted;
 
   bool _isChecking = false;
   bool get isChecking => _isChecking;
@@ -71,7 +92,10 @@ class UpdateService extends ChangeNotifier {
 
     try {
       final uri = Uri.parse(_checkUpdateUrl).replace(
-        queryParameters: {'current_version': _currentVersion},
+        queryParameters: {
+          'current_version': _currentVersion,
+          if (Platform.isWindows) 'platform': 'windows',
+        },
       );
       final response = await http
           .get(uri)
@@ -82,6 +106,7 @@ class UpdateService extends ChangeNotifier {
         _latestVersion = data['latest_version'] as String?;
         _downloadUrl = data['download_url'] as String?;
         _changelog = data['changelog'] as String?;
+        _sha256 = (data['sha256'] as String?)?.toLowerCase();
 
         // Verify with local semantic version comparison
         final serverSaysUpdate = data['has_update'] == true;
@@ -130,6 +155,14 @@ class UpdateService extends ChangeNotifier {
   Future<void> downloadUpdate() async {
     if (_downloadUrl == null || _isDownloading) return;
 
+    // The server only knows the Android APK for now: send Windows users to
+    // the download page instead of fetching a file they cannot run.
+    if (!canInstallInApp) {
+      await launchUrl(Uri.parse(downloadPageUrl),
+          mode: LaunchMode.externalApplication);
+      return;
+    }
+
     _isDownloading = true;
     _downloadProgress = 0.0;
     _downloadError = null;
@@ -149,7 +182,10 @@ class UpdateService extends ChangeNotifier {
       }
 
       final contentLength = streamedResponse.contentLength ?? 0;
-      final fileName = 'LocalVPN-${_latestVersion ?? "update"}.apk';
+      final ext = Platform.isWindows ? 'exe' : 'apk';
+      final fileName = Platform.isWindows
+          ? 'LocalVPN-Setup-${_latestVersion ?? "update"}.$ext'
+          : 'LocalVPN-${_latestVersion ?? "update"}.$ext';
 
       // Use app cache directory (works on all Android versions, no permissions needed)
       final dir = await _getDownloadDir();
@@ -180,15 +216,33 @@ class UpdateService extends ChangeNotifier {
       await sink.close();
       client.close();
 
+      // Refuse a file that is not byte-for-byte what the server announced.
+      if (_sha256 != null && _sha256!.isNotEmpty) {
+        final digest = await sha256.bind(file.openRead()).first;
+        if (digest.toString() != _sha256) {
+          await file.delete();
+          throw const HttpException(
+              'ไฟล์อัปเดตไม่ตรงกับที่เซิร์ฟเวอร์ประกาศ (sha256) — ยกเลิกการติดตั้ง');
+        }
+      }
+
       _downloadProgress = 1.0;
       _isDownloading = false;
       notifyListeners();
 
-      // Install the APK via native intent with FileProvider
-      await _installApk(filePath);
+      if (Platform.isWindows) {
+        await _runWindowsInstaller(filePath);
+      } else {
+        // Install the APK via native intent with FileProvider
+        await _installApk(filePath);
+      }
     } catch (e) {
       client?.close();
-      _downloadError = e.toString().replaceFirst('Exception: ', '');
+      _downloadError = switch (e) {
+        HttpException(:final message) => message,
+        SocketException() => 'เชื่อมต่อเซิร์ฟเวอร์อัปเดตไม่ได้ ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่',
+        _ => 'ดาวน์โหลดอัปเดตไม่สำเร็จ ลองใหม่อีกครั้ง',
+      };
       _isDownloading = false;
       _downloadProgress = 0.0;
       notifyListeners();
@@ -196,9 +250,26 @@ class UpdateService extends ChangeNotifier {
     }
   }
 
+  /// Starts the Inno Setup installer silently and lets the app close so the
+  /// installer can replace its files; the installer relaunches LocalVPN.
+  Future<void> _runWindowsInstaller(String path) async {
+    try {
+      await Process.start(
+        path,
+        ['/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART'],
+        mode: ProcessStartMode.detached,
+      );
+      await onInstallerStarted?.call();
+    } catch (e) {
+      _downloadError = 'เปิดตัวติดตั้งไม่สำเร็จ: $path';
+      notifyListeners();
+    }
+  }
+
   /// Get a writable directory for APK downloads.
   /// Tries external files dir first, falls back to cache.
   Future<Directory> _getDownloadDir() async {
+    if (Platform.isWindows) return getTemporaryDirectory();
     // Try external files directory (app-specific, no permission needed)
     try {
       final extDir = await getExternalStorageDirectory();
@@ -241,8 +312,10 @@ class UpdateService extends ChangeNotifier {
   Future<void> cleanupOldApks() async {
     try {
       final dir = await _getDownloadDir();
-      final files = dir.listSync().where(
-          (f) => f is File && f.path.endsWith('.apk'));
+      final files = dir.listSync().where((f) =>
+          f is File &&
+          (f.path.endsWith('.apk') ||
+              f.path.contains('LocalVPN-Setup-')));
       for (final file in files) {
         try {
           await (file as File).delete();

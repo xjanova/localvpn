@@ -1,38 +1,99 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:window_manager/window_manager.dart';
 
+import 'dev/launch_options.dart';
+import 'dev/shot_harness.dart';
+import 'dev/tun_selftest.dart';
+import 'platform/platform_info.dart';
+import 'screens/shell/app_shell.dart';
 import 'services/license_service.dart';
 import 'services/sound_service.dart';
-import 'theme/app_theme.dart';
-import 'screens/home_screen.dart';
-import 'widgets/cyber_page_route.dart';
+import 'widgets/m3/m3.dart';
 
-void main() {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-      systemNavigationBarColor: AppColors.surface,
-      systemNavigationBarIconBrightness: Brightness.light,
-    ),
-  );
+  final selfTest = args.indexOf('--selftest-tun');
+  if (isWindows && selfTest >= 0 && selfTest + 1 < args.length) {
+    runApp(const SizedBox.shrink());
+    await runTunSelfTest(args[selfTest + 1]);
+    return;
+  }
 
-  runApp(const LocalVPNApp());
+  final options = LaunchOptions.parse(args);
+
+  final theme = M3ThemeController.instance;
+  await theme.load();
+  if (options.theme != null) theme.force(options.theme == 'night');
+
+  if (isDesktop) {
+    // sqflite has no desktop plugin; use the FFI build of SQLite.
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
+
+  if (isWindows) {
+    await windowManager.ensureInitialized();
+    final win = WindowOptions(
+      size: options.size ?? const Size(1360, 860),
+      // Screenshot runs may emulate a phone-sized window.
+      minimumSize: options.isShot ? null : const Size(960, 640),
+      center: !options.isShot,
+      title: 'LocalVPN',
+      titleBarStyle: TitleBarStyle.hidden,
+      backgroundColor: const Color(0xFF050A1C),
+    );
+    unawaited(windowManager.waitUntilReadyToShow(win, () async {
+      if (options.isShot) {
+        // Screenshot runs render off-screen and never take focus.
+        await windowManager.setPosition(const Offset(-32000, -32000));
+        await windowManager.show(inactive: true);
+      } else {
+        await windowManager.show();
+        await windowManager.focus();
+      }
+    }));
+  } else {
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        systemNavigationBarColor: Color(0xFF050A1C),
+        systemNavigationBarIconBrightness: Brightness.light,
+      ),
+    );
+  }
+
+  runApp(LocalVPNApp(options: options));
 }
 
 class LocalVPNApp extends StatelessWidget {
-  const LocalVPNApp({super.key});
+  final LaunchOptions options;
+
+  const LocalVPNApp({super.key, this.options = const LaunchOptions()});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'LocalVPN',
-      debugShowCheckedModeBanner: false,
-      theme: AppTheme.darkTheme,
-      home: const SplashScreen(),
+    final theme = M3ThemeController.instance;
+    return ListenableBuilder(
+      listenable: theme,
+      builder: (context, _) {
+        Widget app = MaterialApp(
+          title: 'LocalVPN',
+          debugShowCheckedModeBanner: false,
+          theme: theme.theme,
+          home: options.isShot
+              ? ShotHarness(options: options)
+              : const SplashScreen(),
+        );
+        if (options.isShot) app = ShotHarness.wrap(app);
+        return app;
+      },
     );
   }
 }
@@ -44,231 +105,129 @@ class SplashScreen extends StatefulWidget {
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen>
-    with TickerProviderStateMixin {
+class _SplashScreenState extends State<SplashScreen> {
   final LicenseService _licenseService = LicenseService();
-  late AnimationController _animController;
-  late AnimationController _scanlineController;
-  late Animation<double> _fadeAnimation;
-  late Animation<double> _scaleAnimation;
-  late Animation<double> _scanlineAnimation;
+  String _status = 'กำลังเตรียมระบบ…';
 
   @override
   void initState() {
     super.initState();
-
-    _animController = AnimationController(
-      duration: const Duration(milliseconds: 1500),
-      vsync: this,
-    );
-
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(
-        parent: _animController,
-        curve: const Interval(0.0, 0.6, curve: Curves.easeOut),
-      ),
-    );
-
-    _scaleAnimation = Tween<double>(begin: 0.5, end: 1.0).animate(
-      CurvedAnimation(
-        parent: _animController,
-        curve: const Interval(0.0, 0.6, curve: Curves.elasticOut),
-      ),
-    );
-
-    // Scan-line overlay animation
-    _scanlineController = AnimationController(
-      duration: const Duration(milliseconds: 3000),
-      vsync: this,
-    )..repeat();
-
-    _scanlineAnimation = Tween<double>(begin: -1.0, end: 2.0).animate(
-      CurvedAnimation(
-        parent: _scanlineController,
-        curve: Curves.linear,
-      ),
-    );
-
-    _animController.forward();
     _initAll();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    M3Icons.precache(context);
+  }
+
   Future<void> _initAll() async {
-    // Initialize sound system and license in parallel
+    final minSplash = Future.delayed(const Duration(milliseconds: 1600));
+    setState(() => _status = 'กำลังตรวจสอบไลเซนส์…');
     await Future.wait([
       SoundService().init(),
       _licenseService.init(),
     ]);
-
-    // Play boot sound after init
     SoundService().play(SfxType.boot);
-
-    // Wait minimum splash time
-    await Future.delayed(const Duration(milliseconds: 2000));
-
+    await minSplash;
     if (!mounted) return;
 
     // Free model: always allow entry. If no license found, set free status.
-    final state = _licenseService.state;
-    if (!state.isValid) {
+    if (!_licenseService.state.isValid) {
       _licenseService.setFreeMode();
     }
 
     Navigator.of(context).pushReplacement(
-      CyberPageRoute(
-        builder: (_) => HomeScreen(licenseService: _licenseService),
+      M3PageRoute(
+        builder: (_) => AppShell(licenseService: _licenseService),
       ),
     );
   }
 
   @override
-  void dispose() {
-    _animController.dispose();
-    _scanlineController.dispose();
-    super.dispose();
+  Widget build(BuildContext context) {
+    final p = context.m3;
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: Stack(
+        children: [
+          const Positioned.fill(child: M3Wallpaper()),
+          if (isWindows)
+            const Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: SizedBox(
+                height: 38,
+                child: DragToMoveArea(child: SizedBox.expand()),
+              ),
+            ),
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon3D(M3Icons.logo, size: 168, glow: p.logoGlow)
+                    .animate()
+                    .fadeIn(duration: 500.ms)
+                    .scale(
+                      begin: const Offset(0.82, 0.82),
+                      duration: 700.ms,
+                      curve: Curves.easeOutBack,
+                    ),
+                const SizedBox(height: 18),
+                const _SplashWordmark()
+                    .animate()
+                    .fadeIn(delay: 200.ms, duration: 500.ms)
+                    .slideY(begin: 0.2, end: 0),
+                const SizedBox(height: 6),
+                Text('VIRTUAL LAN  ·  GAME BOOST',
+                        style: M3Text.eyebrow(context))
+                    .animate()
+                    .fadeIn(delay: 350.ms, duration: 500.ms),
+                const SizedBox(height: 34),
+                const SizedBox(
+                  width: 240,
+                  child: M3ProgressBar(height: 8),
+                ),
+                const SizedBox(height: 12),
+                Text(_status, style: M3Text.sub(context)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
+}
+
+class _SplashWordmark extends StatelessWidget {
+  const _SplashWordmark();
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: AppTheme.backgroundGradient,
+    final p = context.m3;
+    const style = TextStyle(
+      fontFamily: M3Fonts.head,
+      fontSize: 46,
+      fontWeight: FontWeight.w800,
+      fontStyle: FontStyle.italic,
+      height: 1.05,
+      color: Colors.white,
+    );
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ShaderMask(
+          shaderCallback: (r) => p.wordmark.createShader(r),
+          blendMode: BlendMode.srcIn,
+          child: const Text('Local', style: style),
         ),
-        child: Stack(
-          children: [
-            // Main content
-            Center(
-              child: AnimatedBuilder(
-                animation: _animController,
-                builder: (context, child) {
-                  return Opacity(
-                    opacity: _fadeAnimation.value,
-                    child: Transform.scale(
-                      scale: _scaleAnimation.value,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // Logo with neon glow pulse
-                          Container(
-                            width: 100,
-                            height: 100,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(24),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: AppColors.primary
-                                      .withValues(alpha: 0.3),
-                                  blurRadius: 30,
-                                  spreadRadius: 5,
-                                ),
-                              ],
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(24),
-                              child: Image.asset(
-                                'assets/logo.webp',
-                                fit: BoxFit.cover,
-                              ),
-                            ),
-                          )
-                              .animate(
-                                  onPlay: (c) => c.repeat(reverse: true))
-                              .shimmer(
-                                duration: 2000.ms,
-                                color: AppColors.primary.withValues(alpha: 0.3),
-                              ),
-                          const SizedBox(height: 24),
-                          const Text(
-                            'LocalVPN',
-                            style: TextStyle(
-                              fontSize: 36,
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.textPrimary,
-                              letterSpacing: 2,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          const Text(
-                            'Virtual LAN over Internet',
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: AppColors.textMuted,
-                              letterSpacing: 1,
-                            ),
-                          ),
-                          const SizedBox(height: 40),
-                          // Loading dots instead of spinner
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: List.generate(
-                              3,
-                              (i) => Container(
-                                margin:
-                                    const EdgeInsets.symmetric(horizontal: 4),
-                                width: 8,
-                                height: 8,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: AppColors.primary,
-                                ),
-                              )
-                                  .animate(
-                                      onPlay: (c) =>
-                                          c.repeat(reverse: true))
-                                  .fadeIn(
-                                    delay: (i * 200).ms,
-                                    duration: 600.ms,
-                                  )
-                                  .scale(
-                                    begin: const Offset(0.5, 0.5),
-                                    end: const Offset(1.2, 1.2),
-                                    delay: (i * 200).ms,
-                                    duration: 600.ms,
-                                  ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-
-            // Scan-line overlay effect
-            AnimatedBuilder(
-              animation: _scanlineAnimation,
-              builder: (context, _) {
-                return IgnorePointer(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.transparent,
-                          Colors.transparent,
-                          AppColors.primary.withValues(alpha: 0.03),
-                          Colors.transparent,
-                          Colors.transparent,
-                        ],
-                        stops: [
-                          0.0,
-                          (_scanlineAnimation.value - 0.05).clamp(0.0, 1.0),
-                          _scanlineAnimation.value.clamp(0.0, 1.0),
-                          (_scanlineAnimation.value + 0.05).clamp(0.0, 1.0),
-                          1.0,
-                        ],
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ],
+        ShaderMask(
+          shaderCallback: (r) => p.wordmarkAccent.createShader(r),
+          blendMode: BlendMode.srcIn,
+          child: const Text('VPN', style: style),
         ),
-      ),
+      ],
     );
   }
 }

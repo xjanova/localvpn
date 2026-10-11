@@ -16,6 +16,17 @@ class VpnService extends ChangeNotifier {
   String? _error;
   String? get error => _error;
 
+  /// Machine-readable reason for the last failure, e.g. `ADMIN_REQUIRED`
+  /// on Windows when the app is not running as administrator.
+  String? _errorCode;
+  String? get errorCode => _errorCode;
+  bool get needsAdmin => _errorCode == 'ADMIN_REQUIRED';
+
+  // Virtual subnet of the running tunnel (host byte order), used to spot
+  // broadcast packets that must go to every peer.
+  int _netMask = 0;
+  int _netAddr = 0;
+
   bool _isStarting = false;
   bool get isStarting => _isStarting;
 
@@ -47,6 +58,7 @@ class VpnService extends ChangeNotifier {
         break;
       case 'onVpnError':
         _error = call.arguments as String?;
+        _errorCode = 'TUNNEL_FAILED';
         _isConnected = false;
         _isStarting = false;
         notifyListeners();
@@ -56,6 +68,15 @@ class VpnService extends ChangeNotifier {
         final packetData = call.arguments as Uint8List?;
         if (packetData != null) {
           _handleOutgoingPacket(packetData);
+        }
+        break;
+      case 'onTunPackets':
+        // Windows batches every packet read since the last delivery.
+        final packets = call.arguments as List?;
+        if (packets != null) {
+          for (final p in packets) {
+            if (p is Uint8List) _handleOutgoingPacket(p);
+          }
         }
         break;
     }
@@ -68,6 +89,8 @@ class VpnService extends ChangeNotifier {
   }) async {
     _isStarting = true;
     _error = null;
+    _errorCode = null;
+    _setSubnet(virtualIp, subnet);
     notifyListeners();
 
     try {
@@ -88,6 +111,7 @@ class VpnService extends ChangeNotifier {
       return result ?? false;
     } on PlatformException catch (e) {
       _error = e.message ?? 'เกิดข้อผิดพลาดในการเริ่ม VPN';
+      _errorCode = e.code;
       return false;
     } on MissingPluginException {
       // Platform channel not implemented yet - simulate connection
@@ -128,14 +152,57 @@ class VpnService extends ChangeNotifier {
     }
   }
 
+  void _setSubnet(String virtualIp, String subnet) {
+    final ip = _ipToInt(virtualIp);
+    int prefix = 24;
+    if (subnet.contains('/')) {
+      prefix = int.tryParse(subnet.split('/').last) ?? 24;
+    } else {
+      final mask = _ipToInt(subnet);
+      if (mask != null) {
+        prefix = 0;
+        while (prefix < 32 && (mask & (0x80000000 >> prefix)) != 0) {
+          prefix++;
+        }
+      }
+    }
+    prefix = prefix.clamp(8, 30);
+    _netMask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF;
+    _netAddr = (ip ?? 0) & _netMask;
+  }
+
+  static int? _ipToInt(String ip) {
+    final parts = ip.split('.');
+    if (parts.length != 4) return null;
+    var v = 0;
+    for (final part in parts) {
+      final o = int.tryParse(part);
+      if (o == null || o < 0 || o > 255) return null;
+      v = (v << 8) | o;
+    }
+    return v;
+  }
+
   /// Handle outgoing packet from TUN interface → send via P2P
   void _handleOutgoingPacket(Uint8List packet) {
     if (_p2pService == null || packet.length < 20) return;
 
+    final dest = (packet[16] << 24) |
+        (packet[17] << 16) |
+        (packet[18] << 8) |
+        packet[19];
+    final broadcast = (_netAddr | (~_netMask & 0xFFFFFFFF)) & 0xFFFFFFFF;
+
+    // LAN game discovery uses broadcasts — hand those to every direct peer.
+    if (dest == 0xFFFFFFFF || (_netMask != 0 && dest == broadcast)) {
+      _p2pService!.broadcastTunPacket(packet);
+      return;
+    }
+
     // Extract destination IP from IPv4 header (bytes 16-19)
     final destIp = '${packet[16]}.${packet[17]}.${packet[18]}.${packet[19]}';
 
-    _p2pService!.sendToPeer(destIp, packet).catchError((e) {
+    _p2pService!.sendTunPacket(destIp, packet).catchError((e) {
       debugPrint('P2P send error to $destIp: $e');
       return false;
     });
@@ -152,8 +219,17 @@ class VpnService extends ChangeNotifier {
     }
   }
 
+  // ── Screenshot demo data (lib/dev/shot_harness.dart only) ──
+  void debugSetConnected(String virtualIp, String subnet) {
+    _isConnected = true;
+    _virtualIp = virtualIp;
+    _setSubnet(virtualIp, subnet);
+    notifyListeners();
+  }
+
   void clearError() {
     _error = null;
+    _errorCode = null;
     notifyListeners();
   }
 

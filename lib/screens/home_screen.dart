@@ -1,989 +1,688 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-import 'package:url_launcher/url_launcher.dart';
 
-import '../models/license_state.dart';
-import '../services/file_transfer_service.dart';
-import '../services/license_service.dart';
-import '../services/network_service.dart';
-import '../services/p2p_service.dart';
-import '../services/sound_service.dart';
-import '../services/torrent_service.dart';
+import '../models/member.dart';
+import '../platform/platform_info.dart';
+import '../services/game_boost_service.dart';
 import '../services/vpn_proxy_service.dart';
-import '../services/vpn_service.dart';
-import '../theme/app_theme.dart';
-import '../widgets/cyber_page_route.dart';
-import '../widgets/glass_card.dart';
-import '../widgets/neon_button.dart';
-import '../widgets/status_indicator.dart';
-import 'file_transfer_screen.dart';
-import 'network_list_screen.dart';
+import '../widgets/m3/m3.dart';
 import 'network_detail_screen.dart';
-import 'settings_screen.dart';
-import 'torrent/global_torrent_screen.dart';
-import 'vpn_proxy_screen.dart';
+import 'shell/app_services.dart';
+import 'shell/app_shell.dart';
 
+/// "ภาพรวม" — the dashboard: connection hero, live numbers, the current
+/// network's members and shortcuts to every feature.
 class HomeScreen extends StatefulWidget {
-  final LicenseService licenseService;
+  final AppServices services;
 
-  const HomeScreen({
-    super.key,
-    required this.licenseService,
-  });
+  const HomeScreen({super.key, required this.services});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
-  int _currentIndex = 0;
-  late final NetworkService _networkService;
-  late final VpnService _vpnService;
-  late final P2pService _p2pService;
-  late final FileTransferService _fileTransferService;
-  late final TorrentService _torrentService;
-  late final VpnProxyService _vpnProxyService;
-
-  // Bottom nav icon animation controllers
-  late final List<AnimationController> _navIconControllers;
-
-  bool _wasConnected = false;
+class _HomeScreenState extends State<HomeScreen> {
+  AppServices get s => widget.services;
 
   @override
   void initState() {
     super.initState();
-    _networkService = NetworkService();
-    _vpnService = VpnService();
-    _p2pService = P2pService();
-    _fileTransferService = FileTransferService();
-    _torrentService = TorrentService();
-    _vpnProxyService = VpnProxyService();
-
-    // Create animation controllers for each nav icon (7 tabs)
-    _navIconControllers = List.generate(
-      7,
-      (i) => AnimationController(
-        duration: const Duration(milliseconds: 300),
-        vsync: this,
-      ),
-    );
-
-    final deviceId = widget.licenseService.deviceId;
-    if (deviceId != null) {
-      _networkService.configure(
-        deviceId: deviceId,
-        licenseKey: widget.licenseService.state.licenseKey,
-      );
-
-      _networkService.attachP2p(_p2pService);
-      _vpnService.attachP2p(_p2pService);
-
-      _fileTransferService.configure(
-        p2pService: _p2pService,
-        deviceId: deviceId,
-        licenseKey: widget.licenseService.state.licenseKey ?? '',
-      );
-      _p2pService.onFileMessage = (ip, data) {
-        _fileTransferService.handleMessage(ip, data);
-      };
-
-      _torrentService.configure(
-        machineId: deviceId,
-        licenseKey: widget.licenseService.state.licenseKey,
-        displayName: _networkService.members.isNotEmpty
-            ? null
-            : 'Device-${deviceId.substring(0, 8)}',
-      );
-
-      _vpnProxyService.configure(
-        deviceId: deviceId,
-        licenseKey: widget.licenseService.state.licenseKey,
-      );
-    }
-
-    _networkService.addListener(_onNetworkChanged);
-    _vpnService.addListener(_onVpnChanged);
-    _p2pService.addListener(_onP2pChanged);
-    _fileTransferService.addListener(_onChanged);
-    _vpnProxyService.addListener(_onVpnProxyChanged);
-
-    _autoRejoinLastNetwork();
-  }
-
-  Future<void> _autoRejoinLastNetwork() async {
-    final saved = await _networkService.getSavedNetworks();
-    if (saved.isNotEmpty) {
-      final last = saved.first;
-      final slug = last['slug'] as String?;
-      final passwordHash = last['password_hash'] as String?;
-      if (slug != null) {
-        await _networkService.joinNetworkRaw(
-          slug,
-          passwordHash: passwordHash,
-        );
-      }
+    for (final l in _listenables) {
+      l.addListener(_refresh);
     }
   }
 
-  void _onNetworkChanged() {
-    final slug = _networkService.currentNetwork?.slug;
-    _fileTransferService.setNetwork(slug);
-    if (slug != null) {
-      _fileTransferService.refreshFileList();
-    }
-    if (mounted) setState(() {});
-  }
-
-  void _onVpnChanged() {
-    if (mounted) {
-      // Play connect/disconnect sound on state change
-      final isNowConnected = _vpnService.isConnected;
-      if (isNowConnected && !_wasConnected) {
-        SoundService().play(SfxType.connect);
-      } else if (!isNowConnected && _wasConnected) {
-        SoundService().play(SfxType.disconnect);
-      }
-      _wasConnected = isNowConnected;
-      setState(() {});
-    }
-  }
-
-  void _onP2pChanged() {
-    if (mounted) setState(() {});
-  }
-
-  void _onVpnProxyChanged() {
-    // Sync VPN gateway status to network service for heartbeat broadcasting
-    if (_vpnProxyService.status == VpnProxyStatus.connected) {
-      _networkService.setVpnGateway(
-        _vpnProxyService.connectedCountry,
-        hostname: _vpnProxyService.connectedHostname,
-      );
-    } else {
-      _networkService.setVpnGateway(null);
-    }
-    if (mounted) setState(() {});
-  }
-
-  void _onChanged() {
-    if (mounted) setState(() {});
-  }
-
-  void _onTabTapped(int index) {
-    if (index == _currentIndex) return;
-
-    HapticFeedback.selectionClick();
-    SoundService().play(SfxType.tabSwitch);
-
-    // Bounce animation on the tapped icon
-    _navIconControllers[index].forward().then((_) {
-      _navIconControllers[index].reverse();
-    });
-
-    setState(() => _currentIndex = index);
-  }
+  List<Listenable> get _listenables =>
+      [s.vpn, s.network, s.p2p, s.proxy, s.boost, s.license];
 
   @override
   void dispose() {
-    _networkService.removeListener(_onNetworkChanged);
-    _vpnService.removeListener(_onVpnChanged);
-    _p2pService.removeListener(_onP2pChanged);
-    _fileTransferService.removeListener(_onChanged);
-    _vpnProxyService.removeListener(_onVpnProxyChanged);
-    for (final c in _navIconControllers) {
-      c.dispose();
+    for (final l in _listenables) {
+      l.removeListener(_refresh);
     }
-    _networkService.dispose();
-    _vpnService.dispose();
-    _p2pService.dispose();
-    _fileTransferService.dispose();
-    _torrentService.dispose();
-    _vpnProxyService.dispose();
     super.dispose();
+  }
+
+  void _refresh() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _toggleLan() async {
+    if (s.vpn.isConnected) {
+      final ok = await m3Confirm(
+        context,
+        icon3d: M3Icons.power,
+        title: 'ตัดการเชื่อมต่อ LAN เสมือน?',
+        message: 'เกมและไฟล์ที่แชร์ผ่านวงนี้จะหยุดทำงานจนกว่าจะเชื่อมต่อใหม่',
+        confirmLabel: 'ตัดการเชื่อมต่อ',
+        destructive: true,
+      );
+      if (ok) await s.vpn.stopVpn();
+      return;
+    }
+    final vip = s.network.ownVirtualIp;
+    if (vip == null) {
+      m3Toast(context, 'ยังไม่ได้รับ Virtual IP จากเซิร์ฟเวอร์ ลองอีกครั้งในไม่กี่วินาที',
+          tone: M3Tone.amber);
+      return;
+    }
+    final ok = await s.vpn.startVpn(
+      virtualIp: vip,
+      subnet: s.network.currentNetwork?.virtualSubnet ?? '10.10.0.0/24',
+      peers: const [],
+    );
+    if (!mounted) return;
+    if (!ok && s.vpn.needsAdmin) {
+      _askAdmin();
+    } else if (!ok && s.vpn.error != null) {
+      m3Toast(context, s.vpn.error!, tone: M3Tone.red);
+    }
+  }
+
+  void _askAdmin() {
+    showM3Dialog(
+      context,
+      icon3d: M3Icons.adapter,
+      title: 'ต้องใช้สิทธิ์ผู้ดูแลระบบ',
+      message: 'การสร้างการ์ดเครือข่ายเสมือนบน Windows ต้องเปิด LocalVPN '
+          'แบบ "Run as administrator" กดปุ่มด้านล่างเพื่อเปิดใหม่ '
+          '(Windows จะถามยืนยัน)',
+      actions: (ctx) => [
+        GlossButton(
+          label: 'ไว้ทีหลัง',
+          variant: GlossVariant.glass,
+          onPressed: () => Navigator.of(ctx).pop(),
+        ),
+        GlossButton(
+          label: 'เปิดใหม่แบบผู้ดูแลระบบ',
+          icon: Icons.admin_panel_settings_rounded,
+          onPressed: () {
+            Navigator.of(ctx).pop();
+            AppShellScope.of(context).relaunchAsAdmin();
+          },
+        ),
+      ],
+    );
+  }
+
+  void _openNetwork() {
+    final net = s.network.currentNetwork;
+    if (net == null) {
+      AppShellScope.of(context).goTo(ShellTab.networks);
+      return;
+    }
+    Navigator.of(context).push(M3PageRoute(
+      builder: (_) => NetworkDetailScreen(services: s, network: net),
+    ));
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Stack(
-        children: [
-          Container(
-            decoration: BoxDecoration(
-              gradient: AppTheme.backgroundGradient,
-            ),
-          ),
-          // Faint logo watermark
-          Center(
-            child: Opacity(
-              opacity: 0.03,
-              child: Image.asset(
-                'assets/logo.webp',
-                width: MediaQuery.of(context).size.width * 0.7,
-                fit: BoxFit.contain,
-              ),
-            ),
-          ),
-          IndexedStack(
-            index: _currentIndex,
-            children: [
-              _buildHomeTab(),
-              VpnProxyScreen(
-                vpnProxyService: _vpnProxyService,
-                licenseService: widget.licenseService,
-                networkService: _networkService,
-              ),
-              NetworkListScreen(
-                networkService: _networkService,
-                licenseService: widget.licenseService,
-              ),
-              FileTransferScreen(
-                fileTransferService: _fileTransferService,
-                p2pService: _p2pService,
-              ),
-              GlobalTorrentScreen(torrentService: _torrentService),
-              _buildDevicesTab(),
-              SettingsScreen(
-                licenseService: widget.licenseService,
-              ),
-            ],
-          ),
-        ],
-      ),
-      bottomNavigationBar: _buildBottomNav(),
-    );
-  }
+    final w = MediaQuery.sizeOf(context).width;
+    final shell = AppShellScope.of(context);
+    final showAdmin = isWindows && !shell.isElevated;
 
-  Widget _buildBottomNav() {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        border: Border(
-          top: BorderSide(
-            color: AppColors.cardBorder,
-            width: 1,
-          ),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.primary.withValues(alpha: 0.05),
-            blurRadius: 20,
-            offset: const Offset(0, -5),
-          ),
-        ],
-      ),
-      child: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: _onTabTapped,
-        type: BottomNavigationBarType.fixed,
-        items: List.generate(7, (i) {
-          final icons = [
-            [Icons.home_outlined, Icons.home],
-            [Icons.public_outlined, Icons.public],
-            [Icons.lan_outlined, Icons.lan],
-            [Icons.folder_shared_outlined, Icons.folder_shared],
-            [Icons.cloud_download_outlined, Icons.cloud_download],
-            [Icons.devices_outlined, Icons.devices],
-            [Icons.settings_outlined, Icons.settings],
-          ];
-          final labels = ['หน้าแรก', 'VPN', 'เครือข่าย', 'ไฟล์', 'Torrent', 'อุปกรณ์', 'ตั้งค่า'];
-
-          return BottomNavigationBarItem(
-            icon: ScaleTransition(
-              scale: Tween<double>(begin: 1.0, end: 1.3).animate(
-                CurvedAnimation(
-                  parent: _navIconControllers[i],
-                  curve: Curves.elasticOut,
-                ),
-              ),
-              child: Icon(icons[i][0]),
-            ),
-            activeIcon: ScaleTransition(
-              scale: Tween<double>(begin: 1.0, end: 1.3).animate(
-                CurvedAnimation(
-                  parent: _navIconControllers[i],
-                  curve: Curves.elasticOut,
-                ),
-              ),
-              child: Icon(icons[i][1]),
-            ),
-            label: labels[i],
-          );
-        }),
-      ),
-    );
-  }
-
-  Widget _buildHomeTab() {
-    return SafeArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildAppBar(),
-            const SizedBox(height: 24),
-            _buildConnectionStatus(),
-            const SizedBox(height: 20),
-            _buildCurrentNetwork(),
-            const SizedBox(height: 20),
-            _buildQuickActions(),
-            const SizedBox(height: 20),
-            _buildLicenseInfo(),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAppBar() {
-    return Row(
+    return M3PageBody(
+      onRefresh: () async {
+        final slug = s.network.currentNetwork?.slug;
+        if (slug != null) await s.network.getMembers(slug);
+      },
       children: [
-        Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: [
-              BoxShadow(
-                color: AppColors.primary.withValues(alpha: 0.2),
-                blurRadius: 8,
-                spreadRadius: 1,
-              ),
-            ],
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Image.asset(
-              'assets/logo.webp',
-              fit: BoxFit.cover,
+        M3PageHeader(
+          icon3d: M3Icons.power,
+          title: 'ภาพรวม',
+          subtitle: 'LAN เสมือน · ลดปิงเกม · ส่งไฟล์ ในที่เดียว',
+          trailing: const ShellBadges(),
+        ),
+        const SizedBox(height: 16),
+        if (showAdmin) ...[
+          M3Banner(
+            tone: M3Tone.amber,
+            icon3d: M3Icons.adapter,
+            title: 'ยังไม่ได้เปิดแบบผู้ดูแลระบบ',
+            message: 'การ์ดเครือข่ายเสมือน, VPN และการปรับแต่งเพื่อลดปิง '
+                'ต้องใช้สิทธิ์ผู้ดูแลระบบของ Windows',
+            action: GlossButton(
+              label: 'เปิดใหม่แบบผู้ดูแล',
+              size: GlossSize.small,
+              variant: GlossVariant.gold,
+              onPressed: shell.relaunchAsAdmin,
             ),
           ),
-        )
-            .animate(onPlay: (c) => c.repeat(reverse: true))
-            .shimmer(
-              duration: 3000.ms,
-              color: Colors.white.withValues(alpha: 0.15),
-            ),
-        const SizedBox(width: 12),
-        const Expanded(
-          child: Column(
+          const SizedBox(height: 14),
+        ],
+        _Hero(
+          services: s,
+          onToggle: _toggleLan,
+          onOpenNetwork: _openNetwork,
+        ).animate().fadeIn(duration: 350.ms).slideY(begin: 0.04, end: 0),
+        const SizedBox(height: 16),
+        _StatGrid(services: s, columns: w >= 1100 ? 4 : 2)
+            .animate()
+            .fadeIn(delay: 80.ms, duration: 350.ms),
+        const SizedBox(height: 16),
+        if (w >= 1100)
+          Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'LocalVPN',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary,
-                ),
+              Expanded(
+                flex: 5,
+                child: _MembersCard(services: s, onOpen: _openNetwork),
               ),
-              Text(
-                'Virtual LAN Manager',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textMuted,
-                ),
-              ),
+              const SizedBox(width: 16),
+              Expanded(flex: 4, child: _Shortcuts(services: s)),
             ],
-          ),
-        ),
-        StatusIndicator(
-          isOnline: _vpnService.isConnected,
-          size: 12,
-        ),
-      ],
-    ).animate().fadeIn(duration: 400.ms);
-  }
-
-  Widget _buildConnectionStatus() {
-    final isConnected = _vpnService.isConnected;
-
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 500),
-      curve: Curves.easeOutCubic,
-      child: GlassCard(
-        borderColor: isConnected
-            ? AppColors.success.withValues(alpha: 0.3)
-            : AppColors.cardBorder,
-        child: Column(
-          children: [
-            Row(
-              children: [
-                // Animated shield icon
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 400),
-                  width: 56,
-                  height: 56,
-                  decoration: BoxDecoration(
-                    color: isConnected
-                        ? AppColors.success.withValues(alpha: 0.1)
-                        : AppColors.surfaceLight,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Icon(
-                    isConnected ? Icons.shield : Icons.shield_outlined,
-                    color:
-                        isConnected ? AppColors.success : AppColors.textMuted,
-                    size: 28,
-                  ),
-                )
-                    .animate(target: isConnected ? 1 : 0)
-                    .scale(
-                      begin: const Offset(1, 1),
-                      end: const Offset(1.1, 1.1),
-                      duration: 600.ms,
-                      curve: Curves.elasticOut,
-                    )
-                    .shimmer(
-                      duration: 2000.ms,
-                      color: isConnected
-                          ? AppColors.success.withValues(alpha: 0.2)
-                          : Colors.transparent,
-                    ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 300),
-                        child: Text(
-                          isConnected ? 'เชื่อมต่อแล้ว' : 'ไม่ได้เชื่อมต่อ',
-                          key: ValueKey(isConnected),
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: isConnected
-                                ? AppColors.success
-                                : AppColors.textSecondary,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        isConnected
-                            ? 'Virtual IP: ${_vpnService.virtualIp ?? "N/A"}'
-                            : 'เลือกเครือข่ายเพื่อเริ่มเชื่อมต่อ',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: AppColors.textMuted,
-                          fontFamily: isConnected ? 'monospace' : null,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            // P2P connection stats
-            if (isConnected && _p2pService.isActive) ...[
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  _buildP2pStat(
-                    Icons.swap_horiz,
-                    '${_vpnService.directPeers}',
-                    'P2P ตรง',
-                    AppColors.success,
-                  ),
-                  const SizedBox(width: 12),
-                  _buildP2pStat(
-                    Icons.cloud_outlined,
-                    '${_vpnService.relayPeers}',
-                    'ผ่านเซิร์ฟเวอร์',
-                    AppColors.warning,
-                  ),
-                ],
-              ),
-            ],
-            if (_networkService.currentNetwork != null) ...[
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: NeonButton(
-                  text: isConnected ? 'ยกเลิกการเชื่อมต่อ' : 'เชื่อมต่อ VPN',
-                  color: isConnected ? AppColors.error : AppColors.primary,
-                  icon: isConnected ? Icons.stop : Icons.play_arrow,
-                  isLoading: _vpnService.isStarting,
-                  onPressed: _vpnService.isStarting
-                      ? null
-                      : () async {
-                          if (isConnected) {
-                            await _vpnService.stopVpn();
-                          } else {
-                            final vip = _networkService.ownVirtualIp;
-                            if (vip == null) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                      'ยังไม่ได้รับ Virtual IP จากเซิร์ฟเวอร์'),
-                                ),
-                              );
-                              return;
-                            }
-                            await _vpnService.startVpn(
-                              virtualIp: vip,
-                              subnet: _networkService
-                                      .currentNetwork?.virtualSubnet ??
-                                  '10.10.0.0/24',
-                              peers: [],
-                            );
-                          }
-                        },
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    ).animate().fadeIn(duration: 400.ms, delay: 100.ms).slideY(
-          begin: 0.1,
-          end: 0,
-        );
-  }
-
-  Widget _buildP2pStat(
-      IconData icon, String value, String label, Color color) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: color.withValues(alpha: 0.2)),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, color: color, size: 18),
-            const SizedBox(width: 8),
-            Text(
-              value,
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: color,
-              ),
-            ),
-            const SizedBox(width: 4),
-            Flexible(
-              child: Text(
-                label,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: color.withValues(alpha: 0.7),
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCurrentNetwork() {
-    final network = _networkService.currentNetwork;
-
-    if (network == null) {
-      return GlassCard(
-        child: Column(
-          children: [
-            const Icon(
-              Icons.lan_outlined,
-              color: AppColors.textMuted,
-              size: 40,
-            )
-                .animate(onPlay: (c) => c.repeat(reverse: true))
-                .moveY(begin: 0, end: -6, duration: 2000.ms),
-            const SizedBox(height: 8),
-            const Text(
-              'ยังไม่ได้เข้าร่วมเครือข่าย',
-              style: TextStyle(
-                fontSize: 14,
-                color: AppColors.textSecondary,
-              ),
-            ),
-            const SizedBox(height: 12),
-            NeonButton(
-              text: 'ค้นหาเครือข่าย',
-              icon: Icons.search,
-              outlined: true,
-              onPressed: () => _onTabTapped(2),
-            ),
-          ],
-        ),
-      ).animate().fadeIn(duration: 400.ms, delay: 200.ms);
-    }
-
-    return GlassCard(
-      onTap: () {
-        Navigator.of(context).push(
-          CyberPageRoute(
-            builder: (_) => NetworkDetailScreen(
-              networkService: _networkService,
-              network: network,
-              vpnService: _vpnService,
-              vpnProxyService: _vpnProxyService,
-            ),
-          ),
-        );
-      },
-      borderColor: AppColors.primary.withValues(alpha: 0.3),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(
-                Icons.lan,
-                color: AppColors.primary,
-                size: 20,
-              ),
-              const SizedBox(width: 8),
-              const Text(
-                'เครือข่ายปัจจุบัน',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: AppColors.primary,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              const Icon(
-                Icons.arrow_forward_ios,
-                color: AppColors.textMuted,
-                size: 14,
-              )
-                  .animate(onPlay: (c) => c.repeat(reverse: true))
-                  .moveX(begin: 0, end: 3, duration: 1000.ms),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            network.name,
-            style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-              color: AppColors.textPrimary,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              _buildInfoChip(
-                Icons.people,
-                '${network.memberCount} สมาชิก',
-              ),
-              const SizedBox(width: 12),
-              _buildInfoChip(
-                Icons.circle,
-                '${network.onlineCount} ออนไลน์',
-                color: AppColors.success,
-              ),
-            ],
-          ),
+          )
+        else ...[
+          _Shortcuts(services: s),
+          const SizedBox(height: 16),
+          _MembersCard(services: s, onOpen: _openNetwork),
         ],
-      ),
-    ).animate().fadeIn(duration: 400.ms, delay: 200.ms);
-  }
-
-  Widget _buildInfoChip(IconData icon, String text, {Color? color}) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 12, color: color ?? AppColors.textMuted),
-        const SizedBox(width: 4),
-        Text(
-          text,
-          style: TextStyle(
-            fontSize: 12,
-            color: color ?? AppColors.textMuted,
-          ),
-        ),
       ],
     );
   }
+}
 
-  Widget _buildQuickActions() {
-    return Column(
+// ── Hero ────────────────────────────────────────────────────────────────
+
+class _Hero extends StatelessWidget {
+  final AppServices services;
+  final VoidCallback onToggle;
+  final VoidCallback onOpenNetwork;
+
+  const _Hero({
+    required this.services,
+    required this.onToggle,
+    required this.onOpenNetwork,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.m3;
+    final s = services;
+    final net = s.network.currentNetwork;
+    final connected = s.vpn.isConnected;
+    final narrow = MediaQuery.sizeOf(context).width < 700;
+
+    final headline = connected
+        ? 'เชื่อมต่อ LAN แล้ว'
+        : (net == null ? 'ยังไม่ได้เข้าร่วมวง' : 'พร้อมเชื่อมต่อ');
+    final detail = connected
+        ? 'อยู่ในวง "${net?.name ?? '-'}" — เครื่องในวงมองเห็นกันเหมือนเสียบสาย LAN เดียวกัน'
+        : net == null
+            ? 'สร้างวงใหม่หรือเข้าร่วมวงของเพื่อน แล้วกดเชื่อมต่อ'
+            : 'วง "${net.name}" — กดเชื่อมต่อเพื่อเปิดการ์ดเครือข่ายเสมือน';
+
+    final metrics = <(String, String)>[
+      ('Virtual IP', s.vpn.virtualIp ?? s.network.ownVirtualIp ?? '—'),
+      (
+        'ออนไลน์',
+        net == null
+            ? '—'
+            : '${s.network.members.where((m) => m.isOnline).length}/${s.network.members.length}'
+      ),
+      ('P2P ตรง', connected ? '${s.vpn.directPeers}' : '—'),
+      ('ผ่านรีเลย์', connected ? '${s.vpn.relayPeers}' : '—'),
+    ];
+
+    final orb = Icon3D(
+      connected ? M3Icons.p2pDirect : M3Icons.power,
+      size: narrow ? 92 : 132,
+      glow: connected ? p.green.withValues(alpha: 0.45) : p.logoGlow,
+    );
+
+    final buttons = Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      alignment: narrow ? WrapAlignment.start : WrapAlignment.end,
+      children: [
+        if (net != null)
+          GlossButton(
+            label: connected ? 'ตัดการเชื่อมต่อ' : 'เชื่อมต่อ LAN',
+            icon: connected ? Icons.stop_rounded : Icons.power_settings_new,
+            variant: connected ? GlossVariant.red : GlossVariant.aqua,
+            size: GlossSize.large,
+            loading: s.vpn.isStarting,
+            onPressed: s.vpn.isStarting ? null : onToggle,
+          )
+        else
+          GlossButton(
+            label: 'ค้นหาวง',
+            icon3d: M3Icons.scan,
+            size: GlossSize.large,
+            onPressed: () =>
+                AppShellScope.of(context).goTo(ShellTab.networks),
+          ),
+        GlossButton(
+          label: net == null ? 'สร้างวงใหม่' : 'รายละเอียดวง',
+          variant: GlossVariant.glass,
+          size: GlossSize.large,
+          onPressed: onOpenNetwork,
+        ),
+      ],
+    );
+
+    final text = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'การดำเนินการ',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w600,
-            color: AppColors.textPrimary,
-          ),
-        ).animate().fadeIn(duration: 300.ms, delay: 300.ms),
-        const SizedBox(height: 12),
         Row(
           children: [
-            Expanded(
-              child: _buildActionCard(
-                icon: Icons.add_circle_outline,
-                label: 'สร้างเครือข่าย',
-                color: AppColors.primary,
-                onTap: () => _onTabTapped(2),
-              ),
+            StatusOrb(
+              color: connected ? p.green : (net == null ? p.text3 : p.amber),
+              size: 11,
+              pulse: connected,
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _buildActionCard(
-                icon: Icons.search,
-                label: 'ค้นหาเครือข่าย',
-                color: AppColors.secondary,
-                onTap: () => _onTabTapped(2),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                headline,
+                style: TextStyle(
+                  fontFamily: M3Fonts.head,
+                  fontSize: narrow ? 24 : 31,
+                  fontWeight: FontWeight.w700,
+                  color: connected ? p.green : p.text,
+                  shadows: p.titleShadow,
+                ),
               ),
             ),
           ],
         ),
+        const SizedBox(height: 4),
+        Text(detail, style: M3Text.sub(context).copyWith(fontSize: 13.5)),
+        const SizedBox(height: 14),
+        Wrap(
+          spacing: narrow ? 18 : 30,
+          runSpacing: 10,
+          children: [
+            for (final (label, value) in metrics)
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    value,
+                    style: label == 'Virtual IP'
+                        ? M3Text.mono(context,
+                            size: narrow ? 16 : 19,
+                            weight: FontWeight.w700,
+                            color: p.numText)
+                        : M3Text.num(context, size: narrow ? 20 : 24),
+                  ),
+                  Text(label, style: M3Text.sub(context).copyWith(fontSize: 11.5)),
+                ],
+              ),
+          ],
+        ),
       ],
+    );
+
+    return GlassPanel(
+      highlight: true,
+      gloss: false,
+      radius: 24,
+      accent: connected ? p.green : null,
+      padding: EdgeInsets.all(narrow ? 16 : 22),
+      child: narrow
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    orb,
+                    const SizedBox(width: 14),
+                    Expanded(child: text),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                buttons,
+              ],
+            )
+          : Row(
+              children: [
+                orb,
+                const SizedBox(width: 22),
+                Expanded(child: text),
+                const SizedBox(width: 18),
+                SizedBox(width: 230, child: buttons),
+              ],
+            ),
+    );
+  }
+}
+
+// ── Stats ───────────────────────────────────────────────────────────────
+
+class _StatGrid extends StatelessWidget {
+  final AppServices services;
+  final int columns;
+
+  const _StatGrid({required this.services, required this.columns});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = services;
+    final shell = AppShellScope.of(context);
+    final online = s.network.members.where((m) => m.isOnline).length;
+    final boost = s.boost;
+    final live = boost.live.where((v) => v >= 0).toList();
+    final pingNow = live.isNotEmpty
+        ? live.last
+        : (boost.direct?.sample.medianMs);
+    final proxyOn = s.proxy.status == VpnProxyStatus.connected &&
+        !boost.usesTunnel;
+
+    final tiles = [
+      M3StatTile(
+        label: 'สมาชิกออนไลน์',
+        value: '$online',
+        sub: s.network.currentNetwork == null
+            ? 'ยังไม่ได้เข้าร่วมวง'
+            : 'จากทั้งหมด ${s.network.members.length} เครื่องในวง',
+        icon3d: M3Icons.members,
+        tone: online > 0 ? M3Tone.green : null,
+        onTap: () => shell.goTo(ShellTab.devices),
+      ),
+      M3StatTile(
+        label: 'เชื่อมตรงแบบ P2P',
+        value: s.vpn.isConnected ? '${s.vpn.directPeers}' : '—',
+        sub: s.vpn.isConnected
+            ? 'ผ่านรีเลย์ ${s.vpn.relayPeers} เครื่อง'
+            : 'เชื่อมต่อ LAN เพื่อเริ่ม',
+        icon3d: M3Icons.p2pDirect,
+        tone: M3Tone.cyan,
+      ),
+      M3StatTile(
+        label: boost.isActive ? 'ปิงเกม (ลดปิงอยู่)' : 'ปิงไปเซิร์ฟเกม',
+        value: pingNow == null ? '—' : '${pingNow.round()} ms',
+        sub: boost.isActive
+            ? 'ผ่าน ${boost.activeRelay?.countryName ?? ''} → ${boost.targetLabel}'
+            : (boost.direct == null
+                ? 'ยังไม่ได้วัด — ไปที่ลดปิงเกม'
+                : 'เส้นทางตรงไป ${boost.targetLabel}'),
+        icon3d: M3Icons.ping,
+        tone: pingNow == null
+            ? null
+            : (pingNow < 60
+                ? M3Tone.green
+                : pingNow < 120
+                    ? M3Tone.amber
+                    : M3Tone.red),
+        onTap: () => shell.goTo(ShellTab.boost),
+      ),
+      M3StatTile(
+        label: 'VPN ประเทศ',
+        value: proxyOn ? (s.proxy.connectedCountry ?? 'ON') : 'ปิด',
+        sub: proxyOn
+            ? (s.proxy.connectedHostname ?? '')
+            : 'เปลี่ยนประเทศเพื่อปลดล็อกเกม/เว็บ',
+        icon3d: M3Icons.vpnProxy,
+        tone: proxyOn ? M3Tone.cyan : null,
+        onTap: () => shell.goTo(ShellTab.vpn),
+      ),
+    ];
+
+    return LayoutBuilder(builder: (context, c) {
+      const gap = 14.0;
+      final tileW = (c.maxWidth - gap * (columns - 1)) / columns;
+      return Wrap(
+        spacing: gap,
+        runSpacing: gap,
+        children: [
+          for (final t in tiles) SizedBox(width: tileW, child: t),
+        ],
+      );
+    });
+  }
+}
+
+// ── Members ─────────────────────────────────────────────────────────────
+
+class _MembersCard extends StatelessWidget {
+  final AppServices services;
+  final VoidCallback onOpen;
+
+  const _MembersCard({required this.services, required this.onOpen});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.m3;
+    final net = services.network.currentNetwork;
+    final members = [...services.network.members]
+      ..sort((a, b) => (b.isOnline ? 1 : 0).compareTo(a.isOnline ? 1 : 0));
+    final peers = services.p2p.peers;
+
+    return GlassPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          M3CardHeader(
+            icon3d: M3Icons.members,
+            title: net == null ? 'สมาชิกในวง' : net.name,
+            subtitle: net == null
+                ? null
+                : 'ซับเน็ต ${net.virtualSubnet ?? '-'} · ${net.isPublic ? 'วงสาธารณะ' : 'วงส่วนตัว'}',
+            trailing: net == null
+                ? null
+                : GlossButton(
+                    label: 'ดูทั้งหมด',
+                    size: GlossSize.small,
+                    variant: GlossVariant.glass,
+                    onPressed: onOpen,
+                  ),
+          ),
+          const SizedBox(height: 12),
+          if (net == null)
+            M3EmptyState(
+              icon3d: M3Icons.networks,
+              title: 'ยังไม่ได้เข้าร่วมวง LAN',
+              message: 'วงคือกลุ่มเครื่องที่มองเห็นกันเหมือนอยู่ในบ้านเดียวกัน',
+              action: GlossButton(
+                label: 'ไปหน้าเครือข่าย',
+                icon3d: M3Icons.scan,
+                onPressed: () =>
+                    AppShellScope.of(context).goTo(ShellTab.networks),
+              ),
+            )
+          else if (members.isEmpty)
+            const M3EmptyState(
+              icon3d: M3Icons.members,
+              title: 'กำลังโหลดรายชื่อสมาชิก…',
+            )
+          else
+            for (final m in members.take(6))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _MemberRow(
+                  member: m,
+                  self: m.virtualIp == services.network.ownVirtualIp,
+                  direct: peers[m.virtualIp]?.isDirectConnected,
+                ),
+              ),
+          if (members.length > 6)
+            Text('และอีก ${members.length - 6} เครื่อง',
+                textAlign: TextAlign.center,
+                style: M3Text.sub(context).copyWith(color: p.text3)),
+        ],
+      ),
+    );
+  }
+}
+
+class _MemberRow extends StatelessWidget {
+  final NetworkMember member;
+  final bool self;
+  final bool? direct;
+
+  const _MemberRow({required this.member, required this.self, this.direct});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.m3;
+    final m = member;
+    return M3Row(
+      leading: Icon3D(
+        m.displayName.toLowerCase().contains('android') ||
+                m.displayName.toLowerCase().contains('phone')
+            ? M3Icons.devicePhone
+            : M3Icons.devicePc,
+        size: 38,
+        opacity: m.isOnline ? 1 : 0.45,
+      ),
+      title: m.displayName,
+      subtitleWidget: Row(
+        children: [
+          if (m.virtualIp != null)
+            GestureDetector(
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: m.virtualIp!));
+                m3Toast(context, 'คัดลอก ${m.virtualIp} แล้ว',
+                    tone: M3Tone.green);
+              },
+              child: Text(m.virtualIp!, style: M3Text.mono(context, size: 12)),
+            ),
+          if (m.isVpnGateway) ...[
+            const SizedBox(width: 8),
+            M3Tag('VPN ${m.vpnGatewayCountry}', tone: M3Tone.gold),
+          ],
+        ],
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (self)
+            const M3Tag('เครื่องนี้', tone: M3Tone.cyan)
+          else if (m.isOnline && direct != null)
+            M3Tag(direct! ? 'P2P ตรง' : 'รีเลย์',
+                tone: direct! ? M3Tone.green : M3Tone.amber),
+          const SizedBox(width: 10),
+          StatusOrb(
+            color: m.isOnline ? p.green : p.text3,
+            size: 9,
+            pulse: false,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Shortcuts ───────────────────────────────────────────────────────────
+
+class _Shortcuts extends StatelessWidget {
+  final AppServices services;
+  const _Shortcuts({required this.services});
+
+  @override
+  Widget build(BuildContext context) {
+    final shell = AppShellScope.of(context);
+    final items = <(String, String, String, VoidCallback)>[
+      ('สร้างวงใหม่', 'ห้อง LAN ส่วนตัว', M3Icons.createNetwork,
+          () => shell.goTo(ShellTab.networks)),
+      ('ค้นหาวง', 'วงสาธารณะที่เปิดอยู่', M3Icons.scan,
+          () => shell.goTo(ShellTab.networks)),
+      ('ลดปิงเกม', _boostSub(services.boost), M3Icons.gameBoost,
+          () => shell.goTo(ShellTab.boost)),
+      ('VPN ประเทศ', 'ปลดล็อกเกม/เว็บต่างประเทศ', M3Icons.vpnProxy,
+          () => shell.goTo(ShellTab.vpn)),
+      ('ส่งไฟล์', 'ส่งตรงถึงเครื่องในวง', M3Icons.fileTransfer,
+          () => shell.goTo(ShellTab.files)),
+      ('Torrent', 'คลังไฟล์ของชุมชน', M3Icons.torrent,
+          () => shell.goTo(ShellTab.torrent)),
+    ];
+    return GlassPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const M3CardHeader(icon3d: M3Icons.smartRoute, title: 'ทางลัด'),
+          const SizedBox(height: 12),
+          LayoutBuilder(builder: (context, c) {
+            final cols = c.maxWidth > 520 ? 3 : 2;
+            const gap = 10.0;
+            final w = (c.maxWidth - gap * (cols - 1)) / cols;
+            return Wrap(
+              spacing: gap,
+              runSpacing: gap,
+              children: [
+                for (final (title, sub, icon, onTap) in items)
+                  SizedBox(
+                    width: w,
+                    child: _ShortcutTile(
+                        title: title, sub: sub, icon: icon, onTap: onTap),
+                  ),
+              ],
+            );
+          }),
+        ],
+      ),
     );
   }
 
-  Widget _buildActionCard({
-    required IconData icon,
-    required String label,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return GlassCard(
-      onTap: onTap,
-      child: Column(
-        children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(icon, color: color, size: 24),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            label,
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-              color: AppColors.textPrimary,
-            ),
-            textAlign: TextAlign.center,
-          ),
-        ],
-      ),
-    ).animate().fadeIn(duration: 400.ms, delay: 400.ms).scale(
-          begin: const Offset(0.9, 0.9),
-          end: const Offset(1, 1),
-          duration: 400.ms,
-          delay: 400.ms,
-        );
+  static String _boostSub(GameBoostService b) {
+    if (b.isActive) return 'กำลังลดปิงผ่าน ${b.activeRelay?.countryName ?? ''}';
+    return 'วัดและเลือกเส้นทางที่เร็วที่สุด';
   }
+}
 
-  Widget _buildLicenseInfo() {
-    final license = widget.licenseService.state;
-    final isFree = license.status != LicenseStatus.active;
-    final bannerColor = isFree ? const Color(0xFFFFA726) : AppColors.success;
+class _ShortcutTile extends StatefulWidget {
+  final String title;
+  final String sub;
+  final String icon;
+  final VoidCallback onTap;
 
-    return GlassCard(
-      onTap: isFree
-          ? () {
-              SoundService().play(SfxType.tap);
-              _openPurchaseUrl();
-            }
-          : null,
-      borderColor: bannerColor.withValues(alpha: 0.4),
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: bannerColor.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(
-              isFree ? Icons.workspace_premium : Icons.verified,
-              color: bannerColor,
-              size: 20,
-            ),
+  const _ShortcutTile({
+    required this.title,
+    required this.sub,
+    required this.icon,
+    required this.onTap,
+  });
+
+  @override
+  State<_ShortcutTile> createState() => _ShortcutTileState();
+}
+
+class _ShortcutTileState extends State<_ShortcutTile> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.m3;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          padding: const EdgeInsets.fromLTRB(10, 12, 10, 12),
+          decoration: BoxDecoration(
+            color: _hover ? p.hover : p.inset,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: _hover ? p.cyanSoftLine : p.line),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'License: ${license.statusDisplayName}',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: bannerColor,
-                  ),
-                ),
-                Text(
-                  isFree
-                      ? 'อัพเกรด Premium เพื่อปลดล็อคทุกฟีเจอร์'
-                      : license.typeDisplayName,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (isFree)
-            Icon(Icons.arrow_forward_ios, color: bannerColor, size: 14),
-        ],
-      ),
-    ).animate().fadeIn(duration: 400.ms, delay: 500.ms);
-  }
-
-  void _openPurchaseUrl() async {
-    final url = widget.licenseService.getPurchaseUrl('monthly');
-    final uri = Uri.tryParse(url);
-    if (uri != null) {
-      try {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } catch (_) {}
-    }
-  }
-
-  Widget _buildDevicesTab() {
-    return SafeArea(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
-            child: const Text(
-              'อุปกรณ์ที่รู้จัก',
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: AppColors.textPrimary,
+          child: Column(
+            children: [
+              AnimatedScale(
+                scale: _hover ? 1.08 : 1,
+                duration: const Duration(milliseconds: 160),
+                child: Icon3D(widget.icon, size: 56),
               ),
-            ).animate().fadeIn(duration: 300.ms),
+              const SizedBox(height: 6),
+              Text(widget.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: M3Text.h3(context)),
+              const SizedBox(height: 2),
+              Text(
+                widget.sub,
+                maxLines: 2,
+                textAlign: TextAlign.center,
+                overflow: TextOverflow.ellipsis,
+                style: M3Text.sub(context).copyWith(fontSize: 11.5),
+              ),
+            ],
           ),
-          const SizedBox(height: 16),
-          Expanded(
-            child: _networkService.members.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.devices_other,
-                          size: 64,
-                          color: AppColors.textMuted.withValues(alpha: 0.5),
-                        )
-                            .animate(
-                                onPlay: (c) => c.repeat(reverse: true))
-                            .moveY(begin: 0, end: -8, duration: 2500.ms)
-                            .fadeIn(duration: 400.ms),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'ยังไม่พบอุปกรณ์',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: AppColors.textSecondary,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          'เข้าร่วมเครือข่ายเพื่อค้นหาอุปกรณ์',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: AppColors.textMuted,
-                          ),
-                        ),
-                      ],
-                    ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    itemCount: _networkService.members.length,
-                    itemBuilder: (context, index) {
-                      final member = _networkService.members[index];
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: AppColors.surface.withValues(alpha: 0.6),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: member.isOnline
-                                ? AppColors.success.withValues(alpha: 0.2)
-                                : AppColors.cardBorder,
-                          ),
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 44,
-                              height: 44,
-                              decoration: BoxDecoration(
-                                color: member.isOnline
-                                    ? AppColors.success
-                                        .withValues(alpha: 0.1)
-                                    : AppColors.surfaceLight,
-                                borderRadius: BorderRadius.circular(11),
-                              ),
-                              child: Icon(
-                                Icons.devices,
-                                color: member.isOnline
-                                    ? AppColors.success
-                                    : AppColors.textMuted,
-                                size: 22,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    member.displayName,
-                                    style: const TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: AppColors.textPrimary,
-                                    ),
-                                  ),
-                                  if (member.virtualIp != null)
-                                    Text(
-                                      member.virtualIp!,
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        color: AppColors.textMuted,
-                                        fontFamily: 'monospace',
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                            StatusIndicator(isOnline: member.isOnline),
-                          ],
-                        ),
-                      )
-                          .animate()
-                          .fadeIn(
-                            duration: 350.ms,
-                            delay: (index * 60).ms,
-                          )
-                          .slideX(
-                            begin: 0.05,
-                            end: 0,
-                            duration: 350.ms,
-                            delay: (index * 60).ms,
-                          );
-                    },
-                  ),
-          ),
-        ],
+        ),
       ),
     );
   }

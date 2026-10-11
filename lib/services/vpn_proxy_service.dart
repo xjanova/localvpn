@@ -9,8 +9,22 @@ import 'package:wireguard_flutter_plus/wireguard_flutter_plus.dart';
 import 'package:wireguard_flutter_plus/wireguard_flutter_platform_interface.dart';
 
 import '../models/proxy_server.dart';
+import 'net/cidr.dart';
+import 'net/latency_probe.dart';
+import '../platform/windows_native.dart';
 
 enum VpnProxyStatus { disconnected, connecting, connected, disconnecting, error }
+
+/// What goes through the WireGuard tunnel.
+enum WgRouting {
+  /// Whatever the server hands out (0.0.0.0/0, ::/0).
+  server,
+
+  /// All internet traffic, but local / private ranges stay local. On Windows
+  /// a /0 route turns on WireGuard's "block untunneled traffic" firewall,
+  /// which would also cut the home LAN and the LocalVPN virtual LAN.
+  internetOnly,
+}
 
 class VpnProxyService extends ChangeNotifier {
   static const String _baseUrl = 'https://xman4289.com/api/v1/localvpn';
@@ -99,6 +113,14 @@ class VpnProxyService extends ChangeNotifier {
   /// Connection timeout duration
   static const Duration _connectionTimeout = Duration(seconds: 20);
 
+  /// Routing used by the tunnel being set up / running.
+  WgRouting _routing =
+      Platform.isWindows ? WgRouting.internetOnly : WgRouting.server;
+  WgRouting get routing => _routing;
+
+  /// Hosts kept outside the tunnel for the current connection (endpoint).
+  List<String> _bypassHosts = const [];
+
   void configure({required String deviceId, String? licenseKey}) {
     _deviceId = deviceId;
     _licenseKey = licenseKey;
@@ -115,6 +137,14 @@ class VpnProxyService extends ChangeNotifier {
     _loadKeys();
     _loadLastCountry();
     _initializeState();
+  }
+
+  /// New licence key (e.g. upgraded to PRO while running): unlocks the
+  /// premium countries without restarting the app.
+  void setLicenseKey(String? key) {
+    if (key == _licenseKey) return;
+    _licenseKey = key;
+    fetchServers();
   }
 
   /// Load cached data then check if VPN is already running
@@ -371,7 +401,7 @@ class VpnProxyService extends ChangeNotifier {
       case VpnStage.denied:
         _connectionTimer?.cancel();
         _status = VpnProxyStatus.error;
-        _error = 'VPN permission denied';
+        _error = 'ไม่ได้รับอนุญาตให้เปิด VPN';
         _clearConnectionState();
         _connectingCountry = null;
         break;
@@ -385,7 +415,7 @@ class VpnProxyService extends ChangeNotifier {
         }
         _connectionTimer?.cancel();
         _status = VpnProxyStatus.error;
-        _error = 'VPN connection failed';
+        _error = 'เชื่อมต่อ VPN ไม่สำเร็จ';
         _clearConnectionState();
         _connectingCountry = null;
         break;
@@ -505,13 +535,13 @@ class VpnProxyService extends ChangeNotifier {
               'Failed to load server list';
         }
       } else {
-        _error = 'Server error (${response.statusCode})';
+        _error = 'เซิร์ฟเวอร์ขัดข้อง (${response.statusCode})';
       }
     } catch (e) {
       debugPrint('VpnProxyService.fetchServers error: $e');
       // If we have cached servers, use them silently
       if (_countries.isEmpty) {
-        _error = 'Could not load VPN servers';
+        _error = 'โหลดรายชื่อเซิร์ฟเวอร์ VPN ไม่ได้';
       }
     }
 
@@ -555,10 +585,15 @@ class VpnProxyService extends ChangeNotifier {
     return 'server $serverNum/$total';
   }
 
-  /// Connect to the best server in a country (with auto-fallback)
-  Future<bool> connectToCountry(ServerCountry country) async {
+  /// Connect to the best server in a country (with auto-fallback).
+  /// [routing] defaults to [WgRouting.internetOnly] on Windows and to the
+  /// server's routes elsewhere.
+  Future<bool> connectToCountry(ServerCountry country,
+      {WgRouting? routing}) async {
+    _routing = routing ??
+        (Platform.isWindows ? WgRouting.internetOnly : WgRouting.server);
     if (country.servers.isEmpty) {
-      _error = 'No servers available for this country';
+      _error = 'ประเทศนี้ยังไม่มีเซิร์ฟเวอร์ที่ใช้ได้';
       notifyListeners();
       return false;
     }
@@ -571,7 +606,7 @@ class VpnProxyService extends ChangeNotifier {
   /// Switch to a different country
   Future<void> switchToCountry(ServerCountry country) async {
     if (country.servers.isEmpty) {
-      _error = 'No servers available for this country';
+      _error = 'ประเทศนี้ยังไม่มีเซิร์ฟเวอร์ที่ใช้ได้';
       notifyListeners();
       return;
     }
@@ -594,7 +629,7 @@ class VpnProxyService extends ChangeNotifier {
     if (_totalAttempts > maxAttempts) {
       _status = VpnProxyStatus.error;
       _error =
-          'Tried ${country.servers.length} servers across $_maxRounds rounds, could not connect';
+          'ลองครบ ${country.servers.length} เซิร์ฟเวอร์ $_maxRounds รอบแล้ว ยังเชื่อมต่อไม่ได้';
       _clearConnectionState();
       _connectingCountry = null;
       notifyListeners();
@@ -613,7 +648,7 @@ class VpnProxyService extends ChangeNotifier {
     if (_totalAttempts >= maxAttempts) {
       _status = VpnProxyStatus.error;
       _error =
-          'Tried ${country.servers.length} servers across $_maxRounds rounds, could not connect';
+          'ลองครบ ${country.servers.length} เซิร์ฟเวอร์ $_maxRounds รอบแล้ว ยังเชื่อมต่อไม่ได้';
       _clearConnectionState();
       _connectingCountry = null;
       notifyListeners();
@@ -639,6 +674,16 @@ class VpnProxyService extends ChangeNotifier {
   /// Connect to a specific server.
   Future<bool> connect(WireguardServer server, {bool isRetry = false}) async {
     if (!isRetry && _status == VpnProxyStatus.connecting) return false;
+    // The WireGuard tunnel runs as a Windows service: without admin rights
+    // it cannot start, so fail fast (and don't register a peer for nothing).
+    if (Platform.isWindows && !await WindowsNative.isElevated()) {
+      _status = VpnProxyStatus.error;
+      _error = 'ต้องเปิด LocalVPN แบบผู้ดูแลระบบ (Run as administrator) '
+          'จึงจะใช้ VPN บน Windows ได้';
+      _connectingCountry = null;
+      notifyListeners();
+      return false;
+    }
     if (_privateKey == null || _publicKey == null) {
       await _loadKeys();
     }
@@ -691,6 +736,9 @@ class VpnProxyService extends ChangeNotifier {
       final allowedIPs = peer['allowed_ips'] as String;
       final keepalive = peer['persistent_keepalive'] as int? ?? 25;
 
+      // Keep the endpoint itself out of the tunnel when routes are narrowed.
+      _bypassHosts = await _resolveEndpointBypass(endpoint);
+
       // Build WireGuard config string (private key added in-memory only)
       final configParts = {
         'address': address,
@@ -716,6 +764,13 @@ class VpnProxyService extends ChangeNotifier {
 
       debugPrint(
           'WireGuard connect: $serverName | $endpoint | $address');
+
+      // The user may have pressed disconnect while we waited for the
+      // backend; don't bring a tunnel up behind their back.
+      if (_status != VpnProxyStatus.connecting || _disposed) {
+        debugPrint('WireGuard connect cancelled before start');
+        return false;
+      }
 
       await _wireguard.startVpn(
         serverAddress: endpoint,
@@ -745,7 +800,9 @@ class VpnProxyService extends ChangeNotifier {
       }
       _connectionTimer?.cancel();
       _status = VpnProxyStatus.error;
-      _error = 'Could not connect to VPN. Please try again.';
+      _error = Platform.isWindows && !await WindowsNative.isElevated()
+          ? 'ต้องเปิด LocalVPN แบบผู้ดูแลระบบ (Run as administrator) จึงจะใช้ VPN บน Windows ได้'
+          : 'เชื่อมต่อ VPN ไม่สำเร็จ ลองอีกครั้ง';
       _clearConnectionState();
       _connectingCountry = null;
       notifyListeners();
@@ -763,8 +820,39 @@ class VpnProxyService extends ChangeNotifier {
         '[Peer]\n'
         'PublicKey = ${parts['server_pub_key']}\n'
         'Endpoint = ${parts['endpoint']}\n'
-        'AllowedIPs = ${parts['allowed_ips']}\n'
+        'AllowedIPs = ${_allowedIps(parts)}\n'
         'PersistentKeepalive = ${parts['keepalive'] ?? 25}\n';
+  }
+
+  String _allowedIps(Map<String, dynamic> parts) {
+    if (_routing != WgRouting.internetOnly) {
+      return parts['allowed_ips']?.toString() ?? '0.0.0.0/0';
+    }
+    // IPv6 goes in as two halves too: blackholed by a v4-only tunnel, so
+    // apps fall back to IPv4 instead of leaking around the tunnel.
+    return '${Cidr.internetOnlyAllowedIps(bypass: _bypassHosts)}, '
+        '::/1, 8000::/1';
+  }
+
+  /// "host:port" → ["1.2.3.4/32"]; empty when the name cannot be resolved.
+  Future<List<String>> _resolveEndpointBypass(String endpoint) async {
+    final host = endpoint.contains(':')
+        ? endpoint.substring(0, endpoint.lastIndexOf(':'))
+        : endpoint;
+    try {
+      final direct = InternetAddress.tryParse(host);
+      if (direct != null) {
+        return direct.type == InternetAddressType.IPv4
+            ? ['${direct.address}/32']
+            : const [];
+      }
+      final found = await InternetAddress.lookup(host,
+              type: InternetAddressType.IPv4)
+          .timeout(const Duration(seconds: 4));
+      return [for (final a in found) '${a.address}/32'];
+    } catch (_) {
+      return const [];
+    }
   }
 
   /// Reconnect using cached config parts (when backend is unreachable)
@@ -784,13 +872,14 @@ class VpnProxyService extends ChangeNotifier {
 
     if (endpoint.isEmpty) {
       _status = VpnProxyStatus.error;
-      _error = 'Cached config is invalid';
+      _error = 'ค่าการเชื่อมต่อที่จำไว้ใช้ไม่ได้ กรุณาเชื่อมต่อใหม่';
       _clearConnectionState();
       notifyListeners();
       return false;
     }
 
     _connectedIp = endpoint.split(':').first;
+    _bypassHosts = await _resolveEndpointBypass(endpoint);
     final wgConfig = _buildWgConfig(_cachedConfigParts!);
 
     try {
@@ -803,7 +892,7 @@ class VpnProxyService extends ChangeNotifier {
       _connectionTimer = Timer(_connectionTimeout, () {
         if (_status == VpnProxyStatus.connecting) {
           _status = VpnProxyStatus.error;
-          _error = 'Connection timeout (cached config)';
+          _error = 'หมดเวลาเชื่อมต่อ';
           _clearConnectionState();
           _connectingCountry = null;
           notifyListeners();
@@ -814,7 +903,7 @@ class VpnProxyService extends ChangeNotifier {
       return true;
     } catch (e) {
       _status = VpnProxyStatus.error;
-      _error = 'Could not reconnect to VPN. Please try again.';
+      _error = 'เชื่อมต่อ VPN ใหม่ไม่สำเร็จ ลองอีกครั้ง';
       _clearConnectionState();
       notifyListeners();
       return false;
@@ -882,21 +971,21 @@ class VpnProxyService extends ChangeNotifier {
 
   // ─── Ping ──────────────────────────────────────────────────────────
 
-  /// Ping a server to measure latency (ICMP-like via UDP)
+  /// Ping a server to measure latency. This used to time a DNS lookup,
+  /// which says nothing about the route (a cached lookup reads ~0 ms); it now
+  /// sends real ICMP echoes and reports the median round trip.
   Future<int?> pingServer(WireguardServer server) async {
-    try {
-      final host = server.endpoint.split(':').first;
-      final sw = Stopwatch()..start();
-      // Use InternetAddress.lookup as a proxy for latency (DNS/reachability)
-      await InternetAddress.lookup(host)
-          .timeout(const Duration(seconds: 3));
-      sw.stop();
-      final ms = sw.elapsedMilliseconds;
-      server.measuredPing = ms;
-      return ms;
-    } catch (_) {
-      return null;
-    }
+    final endpoint = server.endpoint;
+    final host = endpoint.contains(':')
+        ? endpoint.substring(0, endpoint.lastIndexOf(':'))
+        : endpoint;
+    if (host.isEmpty) return null;
+    final sample = await LatencyProbe.icmp(host, count: 3, timeoutMs: 900);
+    final med = sample.medianMs;
+    if (med == null) return null;
+    final ms = med.round();
+    server.measuredPing = ms;
+    return ms;
   }
 
   /// Ping the best server for each country (background, parallel)
@@ -937,6 +1026,14 @@ class VpnProxyService extends ChangeNotifier {
   }
 
   // ─── Utility ───────────────────────────────────────────────────────
+
+  // ── Screenshot demo data (lib/dev/shot_harness.dart only) ──
+  void debugSeed(List<ServerCountry> countries,
+      {List<ServerCountry> locked = const []}) {
+    _countries = List.of(countries);
+    _lockedCountries = List.of(locked);
+    notifyListeners();
+  }
 
   void clearError() {
     _error = null;

@@ -343,12 +343,20 @@ class FileTransferService extends ChangeNotifier {
 
   /// Download a file using BitTorrent-style multi-peer swarm
   Future<FileTransfer?> downloadFile(SharedFile remoteFile) async {
-    // Already downloading?
+    // Already downloading (or queued)?
     if (_transfers.any((t) =>
         t.fileHash == remoteFile.fileHash &&
-        t.status == TransferStatus.transferring)) {
+        (t.status == TransferStatus.transferring ||
+            t.status == TransferStatus.waiting))) {
       return null;
     }
+    // A retry after a failed/cancelled attempt replaces that attempt, so
+    // incoming chunks (matched by hash) land on the new transfer.
+    _transfers.removeWhere((t) =>
+        t.fileHash == remoteFile.fileHash &&
+        t.direction == TransferDirection.download &&
+        (t.status == TransferStatus.failed ||
+            t.status == TransferStatus.cancelled));
 
     // Already have it?
     if (_localFilePaths.containsKey(remoteFile.fileHash)) return null;
@@ -640,9 +648,12 @@ class FileTransferService extends ChangeNotifier {
         return;
       }
 
-      // Save file
-      final filePath = '${downloadDir.path}/${transfer.fileName}';
-      await File(filePath).writeAsBytes(assembled);
+      // Save file. The name comes from whoever shared it: keep only a safe
+      // base name (no "..\\" escapes, no drive or device names) and never
+      // overwrite an existing file.
+      final filePath =
+          await _uniquePath(downloadDir.path, _safeFileName(transfer.fileName));
+      await File(filePath).writeAsBytes(assembled, flush: true);
 
       transfer.localPath = filePath;
       transfer.status = TransferStatus.completed;
@@ -659,6 +670,40 @@ class FileTransferService extends ChangeNotifier {
       transfer.error = 'บันทึกไฟล์ล้มเหลว: $e';
       notifyListeners();
     }
+  }
+
+  static const _reservedNames = {
+    'con', 'prn', 'aux', 'nul',
+    'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+    'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9',
+  };
+
+  /// A file name that cannot leave the download folder on any platform.
+  static String _safeFileName(String raw) {
+    var name = raw.split(RegExp(r'[\\/]')).last;
+    name = name.replaceAll(RegExp(r'[<>:"|?*\x00-\x1F]'), '_').trim();
+    name = name.replaceAll(RegExp(r'^[. ]+|[. ]+$'), '');
+    if (name.isEmpty) name = 'file';
+    final stem = name.split('.').first.toLowerCase();
+    if (_reservedNames.contains(stem)) name = '_$name';
+    if (name.length > 180) {
+      final ext = path.extension(name);
+      name = name.substring(0, 180 - ext.length) + ext;
+    }
+    return name;
+  }
+
+  /// "dir/name.ext", or "dir/name (2).ext" … when the name is taken.
+  static Future<String> _uniquePath(String dir, String name) async {
+    var candidate = path.join(dir, name);
+    final ext = path.extension(name);
+    final stem = name.substring(0, name.length - ext.length);
+    var n = 2;
+    while (await File(candidate).exists()) {
+      candidate = path.join(dir, '$stem ($n)$ext');
+      n++;
+    }
+    return candidate;
   }
 
   /// Register ourselves as seeder on the server

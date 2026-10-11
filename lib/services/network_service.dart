@@ -348,9 +348,10 @@ class NetworkService extends ChangeNotifier {
           .timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
-        _stopHeartbeat();
-
+        // Leaving/deleting some other network must not stop the heartbeat
+        // (and with it the presence) of the network we are in.
         if (_currentNetwork?.slug == slug) {
+          _stopHeartbeat();
           _currentNetwork = null;
           _members = [];
           _ownVirtualIp = null;
@@ -394,11 +395,16 @@ class NetworkService extends ChangeNotifier {
         final List<dynamic> memberList =
             data is List ? data : (data['members'] as List? ?? []);
 
-        _members =
+        final fetched =
             memberList.map((m) => NetworkMember.fromJson(m)).toList();
+        // `members` belongs to the current network; a lookup of another
+        // network must not overwrite it.
+        if (_currentNetwork == null || _currentNetwork!.slug == slug) {
+          _members = fetched;
+        }
 
         // Save known devices
-        for (final member in _members) {
+        for (final member in fetched) {
           if (member.machineId != null) {
             await _db.saveDevice(
               machineId: member.machineId!,
@@ -428,9 +434,10 @@ class NetworkService extends ChangeNotifier {
       final response = await http.Response.fromStream(streamed);
 
       if (response.statusCode == 200) {
-        _stopHeartbeat();
-
+        // Leaving/deleting some other network must not stop the heartbeat
+        // (and with it the presence) of the network we are in.
         if (_currentNetwork?.slug == slug) {
+          _stopHeartbeat();
           _currentNetwork = null;
           _members = [];
           _ownVirtualIp = null;
@@ -537,6 +544,20 @@ class NetworkService extends ChangeNotifier {
 
   Future<List<Map<String, dynamic>>> getSavedNetworks() async {
     return await _db.getSavedNetworks();
+  }
+
+  // ── Screenshot demo data (lib/dev/shot_harness.dart only) ──
+  void debugSeed({
+    VpnNetwork? current,
+    List<NetworkMember> members = const [],
+    String? ownVirtualIp,
+    List<VpnNetwork> publicNetworks = const [],
+  }) {
+    _currentNetwork = current;
+    _members = List.of(members);
+    _ownVirtualIp = ownVirtualIp;
+    _publicNetworks = List.of(publicNetworks);
+    notifyListeners();
   }
 
   void clearError() {

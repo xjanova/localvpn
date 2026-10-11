@@ -1,5 +1,8 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+
+import '../platform/platform_info.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper _instance = DatabaseHelper._internal();
@@ -15,7 +18,12 @@ class DatabaseHelper {
   }
 
   Future<Database> _initDatabase() async {
-    final dbPath = await getDatabasesPath();
+    // On desktop sqflite_common_ffi's default folder sits next to the working
+    // directory (Program Files when installed, which is read-only), so keep
+    // the database in the per-user app data folder instead.
+    final dbPath = isDesktop
+        ? (await getApplicationSupportDirectory()).path
+        : await getDatabasesPath();
     final path = p.join(dbPath, 'localvpn.db');
 
     return await openDatabase(

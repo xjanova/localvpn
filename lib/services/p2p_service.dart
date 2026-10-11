@@ -289,6 +289,51 @@ class P2pService extends ChangeNotifier {
     return _relayData(targetVirtualIp, data);
   }
 
+  // Relay budget for virtual-LAN packets: the HTTP relay is a fallback for
+  // peers we cannot reach directly, not a packet pipe, so cap it.
+  static const int _relayPacketsPerSecond = 25;
+  static const int _relayMaxPacketBytes = 1500;
+  int _relayWindowStart = 0;
+  int _relayWindowCount = 0;
+
+  /// Send a virtual-LAN (TUN) packet to one peer: direct UDP when the hole
+  /// punch worked, otherwise the server relay within a small budget.
+  Future<bool> sendTunPacket(String targetVirtualIp, Uint8List packet) async {
+    final peer = _peers[targetVirtualIp];
+    if (peer == null) return false;
+    if (peer.isDirectConnected && _udpSocket != null) {
+      return sendToPeer(targetVirtualIp, packet);
+    }
+    if (packet.length > _relayMaxPacketBytes) return false;
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    if (now != _relayWindowStart) {
+      _relayWindowStart = now;
+      _relayWindowCount = 0;
+    }
+    if (_relayWindowCount >= _relayPacketsPerSecond) return false;
+    _relayWindowCount++;
+    return _relayData(targetVirtualIp, packet);
+  }
+
+  /// Send a broadcast TUN packet to every directly connected peer. Broadcasts
+  /// never go through the relay (one LAN game can send dozens per second).
+  void broadcastTunPacket(Uint8List packet) {
+    final socket = _udpSocket;
+    if (socket == null) return;
+    for (final peer in _peers.values) {
+      if (!peer.isDirectConnected) continue;
+      try {
+        socket.send(
+          _buildPacket(peer.virtualIp, packet),
+          InternetAddress(peer.publicIp),
+          peer.publicPort,
+        );
+      } catch (e) {
+        debugPrint('P2P broadcast to ${peer.virtualIp} failed: $e');
+      }
+    }
+  }
+
   /// Initiate UDP hole punch to a peer
   Future<void> _initiateHolePunch(
     String targetVirtualIp,
@@ -378,8 +423,11 @@ class P2pService extends ChangeNotifier {
       return;
     }
 
-    // Regular data packet - extract virtual IP and forward
+    // Regular data packet - extract virtual IP and forward. Only accept it
+    // from an endpoint we know as a peer of this network; anything else is a
+    // stranger who found our UDP port.
     if (data.length > 4) {
+      if (_resolveVirtualIp(senderIp, senderPort) == null) return;
       final virtualIp = _extractVirtualIp(data);
       if (virtualIp != null && onPeerData != null) {
         onPeerData!(virtualIp, Uint8List.sublistView(data, 4));
@@ -638,6 +686,24 @@ class P2pService extends ChangeNotifier {
   String? _extractVirtualIp(Uint8List data) {
     if (data.length < 4) return null;
     return '${data[0]}.${data[1]}.${data[2]}.${data[3]}';
+  }
+
+  // ── Screenshot demo data (lib/dev/shot_harness.dart only) ──
+  void debugSeedPeers(Map<String, bool> directByVirtualIp) {
+    _peers
+      ..clear()
+      ..addAll({
+        for (final e in directByVirtualIp.entries)
+          e.key: PeerConnection(
+            virtualIp: e.key,
+            publicIp: '203.0.113.${_peers.length + 10}',
+            publicPort: 40000,
+            displayName: e.key,
+            isDirectConnected: e.value,
+          ),
+      });
+    _isActive = true;
+    notifyListeners();
   }
 
   void clearError() {

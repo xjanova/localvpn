@@ -1,4 +1,4 @@
-name: Build & Release APK
+name: Build & Release (Android + Windows)
 
 on:
   push:
@@ -9,16 +9,55 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  version:
     runs-on: ubuntu-latest
     # Skip auto-bump commits to prevent infinite loop
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
-
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      build: ${{ steps.bump.outputs.build }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Auto-bump version if tag exists
+        id: bump
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
+          BUILD=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f2)
+          echo "Current version: $VERSION+$BUILD"
+
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "⚠️ Tag v${VERSION} already exists — auto-bumping patch version"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+            PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            NEW_BUILD=$((BUILD + 1))
+            echo "🔼 Bumping: ${VERSION} → ${NEW_VERSION}"
+            sed -i "s/^version: .*/version: ${NEW_VERSION}+${NEW_BUILD}/" pubspec.yaml
+            VERSION="$NEW_VERSION"
+            BUILD="$NEW_BUILD"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add pubspec.yaml
+            git commit -m "v${NEW_VERSION}: auto-bump version [skip ci]"
+            git push
+          else
+            echo "✅ Tag v${VERSION} is new — no bump needed"
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "📦 Version: v${VERSION} (build: ${BUILD})"
+
+  android:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -37,58 +76,25 @@ jobs:
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/keystore/release.keystore
           echo "✅ Release keystore decoded"
 
-      - name: Auto-bump version if tag exists
-        run: |
-          # Extract version from pubspec.yaml
-          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
-          BUILD=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f2)
-          echo "Current version: $VERSION+$BUILD"
-
-          # Check if tag already exists
-          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
-            echo "⚠️ Tag v${VERSION} already exists — auto-bumping patch version"
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-            PATCH=$((PATCH + 1))
-            NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-            NEW_BUILD=$((BUILD + 1))
-            echo "🔼 Bumping: ${VERSION} → ${NEW_VERSION}"
-
-            # Update pubspec.yaml
-            sed -i "s/^version: .*/version: ${NEW_VERSION}+${NEW_BUILD}/" pubspec.yaml
-            VERSION="$NEW_VERSION"
-            BUILD="$NEW_BUILD"
-
-            # Commit and push the version bump
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add pubspec.yaml
-            git commit -m "v${NEW_VERSION}: auto-bump version [skip ci]"
-            git push
-          else
-            echo "✅ Tag v${VERSION} is new — no bump needed"
-          fi
-
-          echo "VERSION=${VERSION}" >> $GITHUB_ENV
-          echo "BUILD_NUMBER=${BUILD}" >> $GITHUB_ENV
-          echo "📦 Version: v${VERSION} (build: ${BUILD})"
-
       - name: Get dependencies
         run: flutter pub get
 
       - name: Run analysis
         run: flutter analyze --no-fatal-infos
 
+      - name: Run tests
+        run: flutter test
+
       - name: Build Release APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: flutter build apk --release --build-name=${{ env.VERSION }} --build-number=${{ env.BUILD_NUMBER }}
+        run: flutter build apk --release --build-name=${{ needs.version.outputs.version }} --build-number=${{ needs.version.outputs.build }}
 
       - name: Rename APK
         run: |
           mkdir -p release-output
-          cp build/app/outputs/flutter-apk/app-release.apk release-output/LocalVPN-v${{ env.VERSION }}.apk
-          echo "✅ APK renamed to LocalVPN-v${{ env.VERSION }}.apk"
+          cp build/app/outputs/flutter-apk/app-release.apk release-output/LocalVPN-v${{ needs.version.outputs.version }}.apk
           ls -la release-output/
 
       - name: Upload APK artifact
@@ -97,29 +103,94 @@ jobs:
           name: LocalVPN-apk
           path: release-output/LocalVPN-*.apk
 
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      BUILD_NUMBER: ${{ needs.version.outputs.build }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build Windows release
+        run: flutter build windows --release --build-name=$env:VERSION --build-number=$env:BUILD_NUMBER
+
+      - name: Check bundle
+        shell: pwsh
+        run: |
+          $dir = "build\windows\x64\runner\Release"
+          foreach ($f in "LocalVPN.exe", "wintun.dll", "flutter_windows.dll", "msvcp140.dll", "vcruntime140.dll") {
+            if (-not (Test-Path "$dir\$f")) { throw "missing $f in the Windows bundle" }
+          }
+          Get-ChildItem $dir | Select-Object Name, Length | Format-Table
+
+      - name: Zip portable build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-output | Out-Null
+          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "release-output\LocalVPN-windows-v$env:VERSION.zip"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          & $iscc "/DAppVersion=$env:VERSION" "windows\installer\LocalVPN.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          Get-ChildItem release-output
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalVPN-windows
+          path: |
+            release-output/LocalVPN-Setup-*.exe
+            release-output/LocalVPN-windows-*.zip
+
+  release:
+    needs: [version, android, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-output
+          merge-multiple: true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ env.VERSION }}
-          name: "LocalVPN v${{ env.VERSION }}"
+          tag_name: v${{ needs.version.outputs.version }}
+          name: "LocalVPN v${{ needs.version.outputs.version }}"
           make_latest: true
           body: |
-            ## LocalVPN v${{ env.VERSION }}
+            ## LocalVPN v${{ needs.version.outputs.version }}
             **by Xman Studio**
 
-            Version: `${{ env.VERSION }}` | Build: `${{ env.BUILD_NUMBER }}`
+            Version: `${{ needs.version.outputs.version }}` | Build: `${{ needs.version.outputs.build }}`
 
             ### ดาวน์โหลด
-            - **LocalVPN-v${{ env.VERSION }}.apk** — ติดตั้งได้เลย
+            - **LocalVPN-v${{ needs.version.outputs.version }}.apk** — Android
+            - **LocalVPN-Setup-v${{ needs.version.outputs.version }}.exe** — Windows 10/11 (ตัวติดตั้ง)
+            - **LocalVPN-windows-v${{ needs.version.outputs.version }}.zip** — Windows แบบพกพา (แตกไฟล์แล้วเปิด LocalVPN.exe)
 
             ### ฟีเจอร์
-            - สร้างวง LAN เสมือนผ่านอินเทอร์เน็ต
-            - สแกนหาเครือข่ายที่เปิดให้เข้าร่วม
-            - ตั้งรหัสเครือข่ายเพื่อความส่วนตัว
-            - เห็นอุปกรณ์ทั้งหมดในวง LAN เสมือน
-            - ส่งข้อมูลระหว่างอุปกรณ์ได้โดยตรง
-            - เข้ารหัสข้อมูลด้วย WireGuard Protocol
-            - NAT Traversal — ใช้ได้ทุกเครือข่าย
+            - สร้างวง LAN เสมือนผ่านอินเทอร์เน็ต — บน Windows มีการ์ดเครือข่ายเสมือน (Wintun) เล่นเกม LAN ได้จริง
+            - ลดปิงเกม — วัดเส้นทางจริง เทียบเส้นทางตรงกับรีเลย์ และปรับแต่ง Windows (สแกน Wi-Fi, แผนพลังงาน, Nagle)
+            - VPN ประเทศ (WireGuard) ไม่ตัด LAN ในบ้าน
+            - ส่งไฟล์ระหว่างเครื่องในวง, Torrent ชุมชน
+            - หน้าตาใหม่ Millennium 3D ธีมกลางคืน/ท้องฟ้า
             - ระบบ License + Auto Update
 
             ---
@@ -128,5 +199,7 @@ jobs:
           prerelease: false
           files: |
             release-output/LocalVPN-*.apk
+            release-output/LocalVPN-Setup-*.exe
+            release-output/LocalVPN-windows-*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

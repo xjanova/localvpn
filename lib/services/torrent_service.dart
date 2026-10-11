@@ -6,7 +6,9 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/bt_models.dart';
 
@@ -305,6 +307,9 @@ class TorrentService extends ChangeNotifier {
 
   /// Start heartbeat timer if not already running.
   void _ensureHeartbeat() {
+    // Seeding means answering chunk requests that come through the relay;
+    // nothing started this poll before, so relay downloads never finished.
+    if (_relayPollTimer == null) startRelayPoll();
     if (_heartbeatTimer != null) return;
     _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) {
       _sendHeartbeat();
@@ -315,6 +320,7 @@ class TorrentService extends ChangeNotifier {
   void stopHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    stopRelayPoll();
     _seedingFileHashes.clear();
   }
 
@@ -358,6 +364,7 @@ class TorrentService extends ChangeNotifier {
     String? description,
     String? thumbnailData,
     int? chunkSize,
+    String? localPath,
   }) async {
     if (_machineId == null || _licenseKey == null) return null;
 
@@ -395,6 +402,7 @@ class TorrentService extends ChangeNotifier {
       if (data != null && data['success'] == true && data['file'] != null) {
         final btFile = BtFile.fromJson(data['file'] as Map<String, dynamic>);
         // Auto-register as seeder for uploaded file
+        if (localPath != null) await rememberLocalFile(fileHash, localPath);
         _seedingFileHashes.add(fileHash);
         _ensureHeartbeat();
         _isUploading = false;
@@ -692,8 +700,12 @@ class TorrentService extends ChangeNotifier {
       if (!await downloadDir.exists()) {
         await downloadDir.create(recursive: true);
       }
-      final filePath = '${downloadDir.path}/${file.fileName}';
-      await File(filePath).writeAsBytes(assembled);
+      // The name comes from the server/uploader: keep a safe base name and
+      // never overwrite an existing file.
+      final filePath =
+          await _uniquePath(downloadDir.path, safeFileName(file.fileName));
+      await File(filePath).writeAsBytes(assembled, flush: true);
+      await rememberLocalFile(file.fileHash, filePath);
 
       _downloadProgress = 1.0;
       _isDownloading = false;
@@ -754,9 +766,11 @@ class TorrentService extends ChangeNotifier {
         final fileHash = req['file_hash'] as String;
         final chunkIndex = req['chunk_index'] as int;
         final requester = req['requester'] as String;
+        final reqChunkSize = req['chunk_size'] as int?;
 
         // Read chunk from local file (if we have it)
-        final chunkData = await _readLocalChunk(fileHash, chunkIndex);
+        final chunkData = await _readLocalChunk(fileHash, chunkIndex,
+            chunkSize: reqChunkSize);
         if (chunkData == null) continue;
 
         // Upload chunk to server for relay
@@ -778,31 +792,112 @@ class TorrentService extends ChangeNotifier {
     }
   }
 
-  /// Read a chunk from a locally stored file.
-  Future<Uint8List?> _readLocalChunk(String fileHash, int chunkIndex) async {
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final torrentDir = Directory('${dir.path}/LocalVPN/Torrent');
-      if (!await torrentDir.exists()) return null;
+  // ─── LOCAL FILES (hash → path) ───
 
-      // Find file by checking hash of each file in torrent dir
-      // For efficiency, cache file paths by hash
-      final files = torrentDir.listSync().whereType<File>();
-      for (final file in files) {
-        // Check if this file matches the hash (simplified: read entire file)
-        // In production, should cache hash→path mapping
-        final bytes = await file.readAsBytes();
-        final hash = sha256.convert(bytes).toString();
-        if (hash == fileHash) {
-          final chunkSize = 32768;
-          final start = chunkIndex * chunkSize;
-          if (start >= bytes.length) return null;
-          final end = (start + chunkSize).clamp(0, bytes.length);
-          return Uint8List.fromList(bytes.sublist(start, end));
-        }
+  static const _prefLocalPaths = 'torrent_local_paths_v1';
+  Map<String, String>? _localPaths;
+
+  Future<Map<String, String>> _paths() async {
+    if (_localPaths != null) return _localPaths!;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_prefLocalPaths);
+      _localPaths = raw == null
+          ? {}
+          : (jsonDecode(raw) as Map<String, dynamic>)
+              .map((k, v) => MapEntry(k, v as String));
+    } catch (_) {
+      _localPaths = {};
+    }
+    return _localPaths!;
+  }
+
+  /// Remember where the file with [fileHash] lives so this device can seed
+  /// it from any folder (uploads are rarely in Documents\LocalVPN\Torrent).
+  Future<void> rememberLocalFile(String fileHash, String path) async {
+    final map = await _paths();
+    map[fileHash] = path;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefLocalPaths, jsonEncode(map));
+    } catch (_) {}
+  }
+
+  static const _reservedNames = {
+    'con', 'prn', 'aux', 'nul',
+    'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+    'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9',
+  };
+
+  /// A file name that cannot leave the download folder on any platform.
+  static String safeFileName(String raw) {
+    var name = raw.split(RegExp(r'[\\/]')).last;
+    name = name.replaceAll(RegExp(r'[<>:"|?*\x00-\x1F]'), '_').trim();
+    name = name.replaceAll(RegExp(r'^[. ]+|[. ]+$'), '');
+    if (name.isEmpty) name = 'file';
+    if (_reservedNames.contains(name.split('.').first.toLowerCase())) {
+      name = '_$name';
+    }
+    if (name.length > 180) {
+      final ext = p.extension(name);
+      name = name.substring(0, 180 - ext.length) + ext;
+    }
+    return name;
+  }
+
+  static Future<String> _uniquePath(String dir, String name) async {
+    var candidate = p.join(dir, name);
+    final ext = p.extension(name);
+    final stem = name.substring(0, name.length - ext.length);
+    var n = 2;
+    while (await File(candidate).exists()) {
+      candidate = p.join(dir, '$stem ($n)$ext');
+      n++;
+    }
+    return candidate;
+  }
+
+  /// Read one chunk of a locally stored file. Reads only that range (the old
+  /// version read and hashed every file in the folder for every request).
+  Future<Uint8List?> _readLocalChunk(String fileHash, int chunkIndex,
+      {int? chunkSize}) async {
+    final size = (chunkSize != null && chunkSize > 0) ? chunkSize : 32768;
+    try {
+      final map = await _paths();
+      var path = map[fileHash];
+      if (path == null || !await File(path).exists()) {
+        path = await _findInTorrentDir(fileHash);
+        if (path == null) return null;
+        await rememberLocalFile(fileHash, path);
+      }
+      final raf = await File(path).open();
+      try {
+        final length = await raf.length();
+        final start = chunkIndex * size;
+        if (chunkIndex < 0 || start >= length) return null;
+        await raf.setPosition(start);
+        return await raf.read((start + size).clamp(0, length) - start);
+      } finally {
+        await raf.close();
       }
     } catch (e) {
       debugPrint('Read chunk error: $e');
+    }
+    return null;
+  }
+
+  /// Last resort for files downloaded before paths were remembered: hash the
+  /// files in Documents\LocalVPN\Torrent (streamed, once per file).
+  Future<String?> _findInTorrentDir(String fileHash) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final torrentDir = Directory(p.join(dir.path, 'LocalVPN', 'Torrent'));
+    if (!await torrentDir.exists()) return null;
+    final known = (await _paths()).values.toSet();
+    await for (final f in torrentDir.list()) {
+      if (f is! File || known.contains(f.path)) continue;
+      final digest = await sha256.bind(f.openRead()).first;
+      await rememberLocalFile(digest.toString(), f.path);
+      if (digest.toString() == fileHash) return f.path;
     }
     return null;
   }
