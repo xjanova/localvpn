@@ -1,20 +1,40 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/member.dart';
+import 'p2p_crypto.dart';
+
+/// Whether traffic with a peer can be end-to-end encrypted.
+enum P2pPeerSecurity {
+  /// The peer's public key has not arrived yet; nothing is sent to it.
+  pendingKey,
+
+  /// Every packet with this peer is encrypted and authenticated.
+  encrypted,
+
+  /// The peer runs an app from before encryption. Nothing is exchanged.
+  peerOutdated,
+
+  /// The peer runs a newer wire format than this app understands.
+  selfOutdated,
+}
 
 /// P2P connection state for a single peer
 class PeerConnection {
   final String virtualIp;
-  final String publicIp;
+  String publicIp;
   int publicPort;
   String displayName;
   bool isDirectConnected;
   DateTime lastActivity;
   int punchAttempts;
+  Uint8List? publicKey;
+  P2pPeerSecurity security;
 
   PeerConnection({
     required this.virtualIp,
@@ -24,6 +44,8 @@ class PeerConnection {
     this.isDirectConnected = false,
     DateTime? lastActivity,
     this.punchAttempts = 0,
+    this.publicKey,
+    this.security = P2pPeerSecurity.pendingKey,
   }) : lastActivity = lastActivity ?? DateTime.now();
 }
 
@@ -60,22 +82,44 @@ class SignalMessage {
 /// BitTorrent-style P2P service.
 ///
 /// Flow:
-/// 1. Device joins network via server (tracker)
-/// 2. Heartbeat returns peer list with public IP:port (like DHT)
+/// 1. Device joins network via server (tracker), advertising its public key
+/// 2. Heartbeat returns peer list with public IP:port and public keys
 /// 3. STUN endpoint reveals own public IP:port
 /// 4. UDP hole punching attempts direct connection
 /// 5. Falls back to server relay if hole punch fails
+///
+/// Everything sent to a peer, direct or relayed, is sealed by [P2pCrypto];
+/// a peer without a usable key gets nothing.
 class P2pService extends ChangeNotifier {
+  P2pService({@visibleForTesting P2pIdentity? identity})
+      : _fixedIdentity = identity;
+
   static const String _baseUrl = 'https://xman4289.com/api/v1/localvpn';
   static const int _maxPunchAttempts = 5;
   static const Duration _punchInterval = Duration(milliseconds: 500);
   static const Duration _signalPollInterval = Duration(seconds: 3);
   static const Duration _peerTimeout = Duration(seconds: 60);
+  static const String _prefPrivateKey = 'p2p_x25519_private_key';
+  static const String _prefLastSession = 'p2p_last_session_id';
+
+  /// Shown when this app is too old for the people in the network.
+  static const String updateAppMessage =
+      'อัปเดตแอปเพื่อเชื่อมต่อกับเพื่อนในวงนี้';
 
   // Configuration
   String? _deviceId;
   String? _licenseKey;
   String? _networkSlug;
+
+  // Encryption
+  final P2pIdentity? _fixedIdentity;
+  Future<P2pIdentity>? _identity;
+  P2pCrypto? _crypto;
+  String? _keyAdvert;
+  int _lastSessionId = 0;
+  String? _ownVirtualIp;
+  bool _serverRelaysKeys = false;
+  bool _sawNewerWire = false;
 
   // Own public endpoint (discovered via STUN)
   String? _publicIp;
@@ -86,6 +130,12 @@ class P2pService extends ChangeNotifier {
   // UDP socket for P2P communication
   RawDatagramSocket? _udpSocket;
   int? _localPort;
+
+  @visibleForTesting
+  int? get localUdpPort => _localPort;
+
+  @visibleForTesting
+  int? get localSession => _crypto?.localSession;
 
   // Connected peers
   final Map<String, PeerConnection> _peers = {};
@@ -109,8 +159,33 @@ class P2pService extends ChangeNotifier {
 
   int get directPeerCount =>
       _peers.values.where((p) => p.isDirectConnected).length;
-  int get relayPeerCount =>
-      _peers.values.where((p) => !p.isDirectConnected).length;
+  int get relayPeerCount => _peers.values
+      .where((p) =>
+          !p.isDirectConnected && p.security == P2pPeerSecurity.encrypted)
+      .length;
+
+  /// This app can't read what someone in the network sends.
+  bool get needsAppUpdate =>
+      _sawNewerWire ||
+      _peers.values.any((p) => p.security == P2pPeerSecurity.selfOutdated);
+
+  /// Members whose app predates encryption; they are not connected to.
+  List<String> get outdatedPeerNames => [
+        for (final p in _peers.values)
+          if (p.security == P2pPeerSecurity.peerOutdated) p.displayName,
+      ];
+
+  /// Why some members can't be reached, in Thai, or null if all can.
+  String? get securityNotice {
+    if (needsAppUpdate) return updateAppMessage;
+    final names = outdatedPeerNames;
+    if (names.isEmpty) return null;
+    final who = names.length <= 3
+        ? names.join(', ')
+        : '${names.take(3).join(', ')} และอีก ${names.length - 3} คน';
+    return '$who ใช้แอปเวอร์ชันเก่าที่ไม่เข้ารหัส — '
+        'ให้อัปเดตแอปเพื่อเชื่อมต่อกับเพื่อนในวงนี้';
+  }
 
   Map<String, String> get _headers => {
         'Content-Type': 'application/json',
@@ -127,6 +202,62 @@ class P2pService extends ChangeNotifier {
     _licenseKey = licenseKey;
   }
 
+  /// This device's public key in the form sent to the server as `p2p_key`,
+  /// or null if no key could be made.
+  Future<String?> keyAdvert() async {
+    try {
+      return (await _loadIdentity()).advert;
+    } catch (e) {
+      debugPrint('P2P key unavailable: $e');
+      return null;
+    }
+  }
+
+  Future<P2pIdentity> _loadIdentity() {
+    final fixed = _fixedIdentity;
+    if (fixed != null) return Future.value(fixed);
+    return _identity ??= _loadOrCreateIdentity();
+  }
+
+  Future<P2pIdentity> _loadOrCreateIdentity() async {
+    SharedPreferences? prefs;
+    try {
+      prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getString(_prefPrivateKey);
+      if (stored != null) {
+        final bytes = base64Decode(stored);
+        if (bytes.length == 32) return await P2pIdentity.fromPrivateKey(bytes);
+      }
+    } catch (e) {
+      debugPrint('P2P stored key unreadable, making a new one: $e');
+    }
+    final identity = await P2pIdentity.generate();
+    try {
+      await prefs?.setString(
+          _prefPrivateKey, base64Encode(identity.privateKeyBytes));
+    } catch (e) {
+      // Still usable for this run; peers pick up the new key next time.
+      debugPrint('P2P key not saved: $e');
+    }
+    return identity;
+  }
+
+  /// A session id above every one this device used before, so peers can
+  /// tell a restart from a replay.
+  Future<int> _newSessionId() async {
+    SharedPreferences? prefs;
+    try {
+      prefs = await SharedPreferences.getInstance();
+      _lastSessionId = max(_lastSessionId, prefs.getInt(_prefLastSession) ?? 0);
+    } catch (_) {}
+    final id = P2pCrypto.nextSessionId(_lastSessionId);
+    _lastSessionId = id;
+    try {
+      await prefs?.setInt(_prefLastSession, id);
+    } catch (_) {}
+    return id;
+  }
+
   /// Start P2P service for a network
   Future<bool> start(String networkSlug) async {
     if (_isStarting) return false;
@@ -135,9 +266,20 @@ class P2pService extends ChangeNotifier {
 
     _networkSlug = networkSlug;
     _error = null;
+    _serverRelaysKeys = false;
+    _sawNewerWire = false;
 
     try {
-      // 1. Bind UDP socket on any available port
+      // 1. Keys: nothing leaves this device unencrypted
+      final identity = await _loadIdentity();
+      _keyAdvert = identity.advert;
+      _crypto = P2pCrypto(
+        identity: identity,
+        networkSlug: networkSlug,
+        localSession: await _newSessionId(),
+      );
+
+      // 2. Bind UDP socket on any available port
       _udpSocket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
       _localPort = _udpSocket!.port;
       debugPrint('P2P: UDP socket bound on port $_localPort');
@@ -148,16 +290,16 @@ class P2pService extends ChangeNotifier {
         onError: (e) => debugPrint('P2P UDP error: $e'),
       );
 
-      // 2. Discover own public IP:port via STUN
+      // 3. Discover own public IP:port via STUN
       await _discoverPublicEndpoint();
 
-      // 3. Start polling for signaling messages
+      // 4. Start polling for signaling messages
       _signalPollTimer = Timer.periodic(
         _signalPollInterval,
         (_) => _pollSignals(),
       );
 
-      // 4. Keep-alive: send periodic pings to connected peers
+      // 5. Keep-alive: send periodic hellos to connected peers
       _keepAliveTimer = Timer.periodic(
         const Duration(seconds: 15),
         (_) => _sendKeepAlives(),
@@ -176,6 +318,7 @@ class P2pService extends ChangeNotifier {
       _udpSocket?.close();
       _udpSocket = null;
       _localPort = null;
+      _crypto = null;
       _isStarting = false;
 
       _error = 'ไม่สามารถเริ่ม P2P ได้: $e';
@@ -197,6 +340,10 @@ class P2pService extends ChangeNotifier {
     _publicIp = null;
     _publicPort = null;
     _peers.clear();
+    _crypto = null;
+    _ownVirtualIp = null;
+    _serverRelaysKeys = false;
+    _sawNewerWire = false;
     _isActive = false;
     _networkSlug = null;
     notifyListeners();
@@ -226,31 +373,37 @@ class P2pService extends ChangeNotifier {
   /// Update peer list from heartbeat response
   void updatePeers(List<NetworkMember> onlinePeers) {
     final currentVirtualIps = <String>{};
+    final toPunch = <PeerConnection>[];
 
-    for (final peer in onlinePeers) {
-      if (peer.virtualIp == null || peer.publicIp == null) continue;
-      // Skip self
-      if (peer.machineId != null && peer.machineId == _deviceId) continue;
-      currentVirtualIps.add(peer.virtualIp!);
-
-      final existing = _peers[peer.virtualIp!];
-      if (existing != null) {
-        // Update info but keep connection state
-        existing.displayName = peer.displayName;
-      } else {
-        // New peer discovered - initiate hole punch
-        _peers[peer.virtualIp!] = PeerConnection(
-          virtualIp: peer.virtualIp!,
-          publicIp: peer.publicIp!,
-          publicPort: peer.publicPort ?? 0,
-          displayName: peer.displayName,
-        );
-
-        // Initiate hole punch for new peer
-        if (peer.publicPort != null && peer.publicPort! > 0) {
-          _initiateHolePunch(peer.virtualIp!, peer.publicIp!, peer.publicPort!);
-        }
+    for (final member in onlinePeers) {
+      final vip = member.virtualIp;
+      if (vip == null) continue;
+      // Self: remember our virtual IP, it goes in every packet header
+      if (member.machineId != null && member.machineId == _deviceId) {
+        _ownVirtualIp = vip;
+        continue;
       }
+      if (member.publicIp == null) continue;
+      currentVirtualIps.add(vip);
+      if (member.reportsP2pKey) _serverRelaysKeys = true;
+
+      var peer = _peers[vip];
+      final isNew = peer == null;
+      // New peer discovered
+      peer ??= _peers[vip] = PeerConnection(
+        virtualIp: vip,
+        publicIp: member.publicIp!,
+        publicPort: member.publicPort ?? 0,
+        displayName: member.displayName,
+      );
+      peer.displayName = member.displayName;
+
+      final keyChanged = _applyKeyAdvert(
+        peer,
+        member.p2pKey,
+        fromServer: member.reportsP2pKey,
+      );
+      if ((isNew || keyChanged) && peer.publicPort > 0) toPunch.add(peer);
     }
 
     // Remove peers that went offline
@@ -259,34 +412,93 @@ class P2pService extends ChangeNotifier {
     );
 
     notifyListeners();
+
+    for (final peer in toPunch) {
+      _requestHolePunch(peer.virtualIp, peer.publicIp, peer.publicPort);
+    }
   }
 
-  /// Send data to a peer (P2P direct or relay fallback)
-  Future<bool> sendToPeer(String targetVirtualIp, Uint8List data) async {
+  /// Applies a key advert (`p2p_key`) to [peer]. True if the peer has a new
+  /// key, which then has to prove the path again.
+  bool _applyKeyAdvert(
+    PeerConnection peer,
+    String? advert, {
+    required bool fromServer,
+  }) {
+    final parsed = P2pKeyAdvert.parse(advert);
+    if (parsed == null) {
+      // The server keeps keys and this member never sent one: its app is
+      // from before encryption.
+      if (fromServer && advert == null && peer.publicKey == null) {
+        peer.security = P2pPeerSecurity.peerOutdated;
+      }
+      return false;
+    }
+    if (parsed.version > P2pWire.version) {
+      peer.security = P2pPeerSecurity.selfOutdated;
+      return false;
+    }
+    final key = parsed.key;
+    if (key == null) {
+      peer.security = P2pPeerSecurity.peerOutdated;
+      return false;
+    }
+    if (_crypto?.acceptsPeerKey(key) == false) {
+      debugPrint('P2P: unusable key for ${peer.virtualIp}');
+      return false;
+    }
+    final changed =
+        peer.publicKey == null || !listEquals(peer.publicKey, key);
+    peer.security = P2pPeerSecurity.encrypted;
+    if (changed) {
+      peer.publicKey = key;
+      peer.isDirectConnected = false;
+    }
+    return changed;
+  }
+
+  /// Whether we exchange anything at all with [peer].
+  bool _mayContact(PeerConnection peer) =>
+      peer.security == P2pPeerSecurity.pendingKey ||
+      peer.security == P2pPeerSecurity.encrypted;
+
+  /// Send a virtual-LAN packet to a peer (P2P direct or relay fallback).
+  /// Returns false, sending nothing, when it can't be encrypted for the peer.
+  Future<bool> sendToPeer(String targetVirtualIp, Uint8List data) =>
+      _sendSealed(targetVirtualIp, P2pPacketType.data, data);
+
+  /// Send a file-transfer message (LVPN_FILE_…) to a peer.
+  Future<bool> sendFileMessage(String targetVirtualIp, Uint8List message) =>
+      _sendSealed(targetVirtualIp, P2pPacketType.file, message);
+
+  Future<bool> _sendSealed(
+    String targetVirtualIp,
+    P2pPacketType type,
+    Uint8List payload,
+  ) async {
     final peer = _peers[targetVirtualIp];
+    final packet = peer == null ? null : _seal(peer, type, payload);
+    if (peer == null || packet == null) return false;
 
     // Try direct P2P first
-    if (peer != null && peer.isDirectConnected && _udpSocket != null) {
+    final socket = _udpSocket;
+    if (peer.isDirectConnected && socket != null) {
       try {
-        // Prepend virtual IP header (4 bytes) for routing
-        final packet = _buildPacket(targetVirtualIp, data);
-        final sent = _udpSocket!.send(
+        final sent = socket.send(
           packet,
           InternetAddress(peer.publicIp),
           peer.publicPort,
         );
-        if (sent > 0) {
-          peer.lastActivity = DateTime.now();
-          return true;
-        }
+        if (sent > 0) return true;
       } catch (e) {
         debugPrint('P2P direct send failed: $e');
         peer.isDirectConnected = false;
       }
     }
 
-    // Fallback to server relay
-    return _relayData(targetVirtualIp, data);
+    // Fallback to server relay: the same sealed packet, so the server only
+    // ever sees ciphertext
+    return _relayData(targetVirtualIp, packet);
   }
 
   // Relay budget for virtual-LAN packets: the HTTP relay is a fallback for
@@ -297,7 +509,8 @@ class P2pService extends ChangeNotifier {
   int _relayWindowCount = 0;
 
   /// Send a virtual-LAN (TUN) packet to one peer: direct UDP when the hole
-  /// punch worked, otherwise the server relay within a small budget.
+  /// punch worked, otherwise the server relay within a small budget. Sealed
+  /// either way; false if it can't be encrypted for the peer.
   Future<bool> sendTunPacket(String targetVirtualIp, Uint8List packet) async {
     final peer = _peers[targetVirtualIp];
     if (peer == null) return false;
@@ -311,20 +524,25 @@ class P2pService extends ChangeNotifier {
       _relayWindowCount = 0;
     }
     if (_relayWindowCount >= _relayPacketsPerSecond) return false;
+    final sealed = _seal(peer, P2pPacketType.data, packet);
+    if (sealed == null) return false;
     _relayWindowCount++;
-    return _relayData(targetVirtualIp, packet);
+    return _relayData(targetVirtualIp, sealed);
   }
 
-  /// Send a broadcast TUN packet to every directly connected peer. Broadcasts
-  /// never go through the relay (one LAN game can send dozens per second).
+  /// Send a broadcast TUN packet to every directly connected peer, sealed
+  /// for each. Broadcasts never go through the relay (one LAN game can send
+  /// dozens per second).
   void broadcastTunPacket(Uint8List packet) {
     final socket = _udpSocket;
     if (socket == null) return;
     for (final peer in _peers.values) {
       if (!peer.isDirectConnected) continue;
+      final sealed = _seal(peer, P2pPacketType.data, packet);
+      if (sealed == null) continue;
       try {
         socket.send(
-          _buildPacket(peer.virtualIp, packet),
+          sealed,
           InternetAddress(peer.publicIp),
           peer.publicPort,
         );
@@ -334,8 +552,52 @@ class P2pService extends ChangeNotifier {
     }
   }
 
-  /// Initiate UDP hole punch to a peer
-  Future<void> _initiateHolePunch(
+  /// Seals [payload] for [peer], or null if that can't be done (no key yet,
+  /// peer on another app version, peer session not known yet).
+  Uint8List? _seal(
+    PeerConnection peer,
+    P2pPacketType type,
+    List<int> payload, {
+    int? receiverSession,
+  }) {
+    final crypto = _crypto;
+    final ownVip = _ownVirtualIp;
+    final key = peer.publicKey;
+    if (crypto == null ||
+        ownVip == null ||
+        key == null ||
+        peer.security != P2pPeerSecurity.encrypted) {
+      return null;
+    }
+    final session = receiverSession ?? crypto.peerSession(key);
+    if (session == 0 && type != P2pPacketType.hello) return null;
+    try {
+      return crypto.seal(
+        peerKey: key,
+        senderVirtualIp: ownVip,
+        type: type,
+        receiverSession: session,
+        payload: payload,
+      );
+    } catch (e) {
+      debugPrint('P2P seal failed for ${peer.virtualIp}: $e');
+      return null;
+    }
+  }
+
+  /// What a punch signal carries: our endpoint, key and session. The key
+  /// and session let a peer reach us even when the server doesn't relay
+  /// keys yet.
+  Map<String, dynamic> get _punchPayload => {
+        'udp_port': _localPort,
+        'public_ip': _publicIp,
+        if (_keyAdvert case final advert?) 'p2p_key': advert,
+        if (_crypto case final crypto?)
+          'p2p_session': '${crypto.localSession}',
+      };
+
+  /// Ask a peer (via signaling) to punch towards us, and punch towards it.
+  Future<void> _requestHolePunch(
     String targetVirtualIp,
     String targetPublicIp,
     int targetPublicPort,
@@ -343,7 +605,7 @@ class P2pService extends ChangeNotifier {
     if (_udpSocket == null || _networkSlug == null) return;
 
     final peer = _peers[targetVirtualIp];
-    if (peer == null || peer.isDirectConnected) return;
+    if (peer == null || peer.isDirectConnected || !_mayContact(peer)) return;
 
     debugPrint('P2P: Initiating hole punch to $targetVirtualIp '
         '($targetPublicIp:$targetPublicPort)');
@@ -352,30 +614,35 @@ class P2pService extends ChangeNotifier {
     await _sendSignal(
       targetVirtualIp: targetVirtualIp,
       type: 'punch_request',
-      payload: {
-        'udp_port': _localPort,
-        'public_ip': _publicIp,
-      },
+      payload: _punchPayload,
     );
 
-    // Send UDP punch packets
+    await _punchTowards(peer, targetPublicIp, targetPublicPort);
+  }
+
+  /// Send hello packets to open our NAT towards a peer. A sealed reply
+  /// marks the peer as directly connected.
+  Future<void> _punchTowards(
+    PeerConnection peer,
+    String targetPublicIp,
+    int targetPublicPort,
+  ) async {
     peer.punchAttempts = 0;
     for (int i = 0; i < _maxPunchAttempts; i++) {
-      if (!_isActive) return;
+      if (!_isActive || peer.isDirectConnected) return;
       peer.punchAttempts = i + 1;
-
-      try {
-        final punchData = utf8.encode('LVPN_PUNCH:$_publicIp:$_localPort');
-        _udpSocket!.send(
-          punchData,
-          InternetAddress(targetPublicIp),
-          targetPublicPort,
-        );
-      } catch (e) {
-        debugPrint('P2P punch packet $i failed: $e');
-      }
-
+      _sendHello(peer, targetPublicIp, targetPublicPort);
       await Future.delayed(_punchInterval);
+    }
+  }
+
+  void _sendHello(PeerConnection peer, String ip, int port) {
+    final packet = _seal(peer, P2pPacketType.hello, const []);
+    if (packet == null) return;
+    try {
+      _udpSocket?.send(packet, InternetAddress(ip), port);
+    } catch (e) {
+      debugPrint('P2P hello to ${peer.virtualIp} failed: $e');
     }
   }
 
@@ -386,81 +653,89 @@ class P2pService extends ChangeNotifier {
     final datagram = _udpSocket!.receive();
     if (datagram == null) return;
 
-    final senderIp = datagram.address.address;
-    final senderPort = datagram.port;
-    final data = datagram.data;
-
-    // Check if it's a punch packet
-    final text = utf8.decode(data, allowMalformed: true);
-    if (text.startsWith('LVPN_PUNCH:')) {
-      _handlePunchPacket(senderIp, senderPort, text);
-      return;
-    }
-
-    // Check if it's a keepalive
-    if (text == 'LVPN_PING') {
-      _udpSocket!.send(utf8.encode('LVPN_PONG'), datagram.address, senderPort);
-      return;
-    }
-
-    if (text == 'LVPN_PONG') {
-      // Peer is alive - update activity
-      for (final peer in _peers.values) {
-        if (peer.publicIp == senderIp && peer.publicPort == senderPort) {
-          peer.lastActivity = DateTime.now();
-          peer.isDirectConnected = true;
-          break;
+    switch (P2pWire.classify(datagram.data)) {
+      case P2pWireKind.current:
+        _handleSealedPacket(datagram);
+      case P2pWireKind.newer:
+        // A member runs a later wire format that this app can't read.
+        if (!_sawNewerWire && _peerAt(datagram.address.address) != null) {
+          _sawNewerWire = true;
+          notifyListeners();
         }
-      }
-      return;
-    }
-
-    // Check if it's a file transfer message
-    if (text.startsWith('LVPN_FILE_')) {
-      // Map sender's public IP to virtual IP for correct routing
-      final senderVip = _resolveVirtualIp(senderIp, senderPort);
-      onFileMessage?.call(senderVip ?? senderIp, data);
-      return;
-    }
-
-    // Regular data packet - extract virtual IP and forward. Only accept it
-    // from an endpoint we know as a peer of this network; anything else is a
-    // stranger who found our UDP port.
-    if (data.length > 4) {
-      if (_resolveVirtualIp(senderIp, senderPort) == null) return;
-      final virtualIp = _extractVirtualIp(data);
-      if (virtualIp != null && onPeerData != null) {
-        onPeerData!(virtualIp, Uint8List.sublistView(data, 4));
-      }
+      case P2pWireKind.legacy:
+        _handleLegacyPacket(datagram);
+      case P2pWireKind.junk:
+        break;
     }
   }
 
-  /// Handle a punch packet - establish direct connection
-  void _handlePunchPacket(String senderIp, int senderPort, String text) {
-    debugPrint('P2P: Received punch from $senderIp:$senderPort');
+  void _handleSealedPacket(Datagram datagram) {
+    final header = P2pWire.parseHeader(datagram.data);
+    final peer = header == null ? null : _peers[header.senderVirtualIp];
+    final key = peer?.publicKey;
+    final crypto = _crypto;
+    if (peer == null || key == null || crypto == null) return;
 
-    // Find which peer this is from
-    for (final peer in _peers.values) {
-      if (peer.publicIp == senderIp ||
-          text.contains(peer.publicIp)) {
-        peer.isDirectConnected = true;
-        peer.publicPort = senderPort;
-        peer.lastActivity = DateTime.now();
-        debugPrint('P2P: Direct connection established with '
-            '${peer.virtualIp} ($senderIp:$senderPort)');
+    // Forged, tampered, replayed or stale packets stop here
+    final opened = crypto.open(datagram.data, peerKey: key);
+    if (opened == null) return;
+    peer.lastActivity = DateTime.now();
 
-        // Send ack punch back
+    switch (opened.type) {
+      case P2pPacketType.hello:
+        // Answer where it came from: that is the peer's NAT mapping
+        final reply = _seal(
+          peer,
+          P2pPacketType.helloReply,
+          const [],
+          receiverSession: opened.senderSession,
+        );
+        if (reply == null) return;
         try {
-          _udpSocket?.send(
-            utf8.encode('LVPN_PUNCH:${_publicIp ?? ""}:$_localPort'),
-            InternetAddress(senderIp),
-            senderPort,
-          );
-        } catch (_) {}
+          _udpSocket?.send(reply, datagram.address, datagram.port);
+        } catch (e) {
+          debugPrint('P2P hello reply to ${peer.virtualIp} failed: $e');
+        }
+        // A hello alone could be a replay, so it doesn't make the peer
+        // direct or move its endpoint. Our own hello does, once its reply
+        // comes back (new peer, or the peer restarted on another port).
+        if (!peer.isDirectConnected ||
+            peer.publicIp != datagram.address.address ||
+            peer.publicPort != datagram.port) {
+          _sendHello(peer, datagram.address.address, datagram.port);
+        }
+      case P2pPacketType.helloReply:
+        // A reply bound to our session: the path works both ways, now
+        final senderIp = datagram.address.address;
+        final senderPort = datagram.port;
+        final changed = !peer.isDirectConnected ||
+            peer.publicIp != senderIp ||
+            peer.publicPort != senderPort;
+        peer.isDirectConnected = true;
+        peer.publicIp = senderIp;
+        peer.publicPort = senderPort;
+        if (changed) {
+          debugPrint('P2P: Direct connection established with '
+              '${peer.virtualIp} ($senderIp:$senderPort)');
+          notifyListeners();
+        }
+      case P2pPacketType.data:
+        onPeerData?.call(peer.virtualIp, opened.payload);
+      case P2pPacketType.file:
+        onFileMessage?.call(peer.virtualIp, opened.payload);
+    }
+  }
 
-        notifyListeners();
-        break;
-      }
+  /// Plaintext from an app that predates encryption. Never processed; it
+  /// only tells us why that member can't be reached.
+  void _handleLegacyPacket(Datagram datagram) {
+    final peer = _peerAt(datagram.address.address, datagram.port);
+    // A member with a key never sends this; maybe another device behind
+    // the same NAT.
+    if (peer == null || peer.publicKey != null) return;
+    if (peer.security != P2pPeerSecurity.peerOutdated) {
+      peer.security = P2pPeerSecurity.peerOutdated;
+      notifyListeners();
     }
   }
 
@@ -505,63 +780,53 @@ class P2pService extends ChangeNotifier {
 
   /// Handle a received signaling message
   Future<void> _handleSignal(SignalMessage signal) async {
-    switch (signal.type) {
-      case 'punch_request':
-        // Peer wants to punch to us - punch back
-        final peerPort = signal.payload['udp_port'] as int? ??
-            signal.fromPublicPort ??
-            0;
-        final peerIp =
-            signal.payload['public_ip'] as String? ?? signal.fromPublicIp;
+    if (signal.type != 'punch_request' && signal.type != 'punch_response') {
+      return;
+    }
+    final peer = _peers[signal.fromVirtualIp];
+    if (peer == null) return;
+    _learnFromSignal(peer, signal.payload);
+    if (!_mayContact(peer)) return;
 
-        if (peerPort > 0 && peerIp.isNotEmpty) {
-          // Update peer info
-          final peer = _peers[signal.fromVirtualIp];
-          if (peer != null) {
-            peer.publicPort = peerPort;
-          }
+    final peerPort = signal.payload['udp_port'] as int? ??
+        signal.fromPublicPort ??
+        0;
+    final peerIp =
+        signal.payload['public_ip'] as String? ?? signal.fromPublicIp;
+    if (peerPort <= 0 || peerIp.isEmpty) return;
+    peer.publicPort = peerPort;
 
-          // Punch towards them
-          _initiateHolePunch(signal.fromVirtualIp, peerIp, peerPort);
+    if (signal.type == 'punch_request') {
+      // Peer wants to punch to us - punch back, and tell it where we are.
+      // Only a request is answered, so the two never ping-pong forever.
+      _punchTowards(peer, peerIp, peerPort);
+      await _sendSignal(
+        targetVirtualIp: signal.fromVirtualIp,
+        type: 'punch_response',
+        payload: _punchPayload,
+      );
+    } else {
+      await _punchTowards(peer, peerIp, peerPort);
+    }
+  }
 
-          // Send response signal
-          await _sendSignal(
-            targetVirtualIp: signal.fromVirtualIp,
-            type: 'punch_response',
-            payload: {
-              'udp_port': _localPort,
-              'public_ip': _publicIp,
-            },
-          );
-        }
-        break;
-
-      case 'punch_response':
-        // Peer responded - punch towards their port
-        final peerPort = signal.payload['udp_port'] as int? ??
-            signal.fromPublicPort ??
-            0;
-        final peerIp =
-            signal.payload['public_ip'] as String? ?? signal.fromPublicIp;
-
-        if (peerPort > 0 && peerIp.isNotEmpty) {
-          final peer = _peers[signal.fromVirtualIp];
-          if (peer != null) {
-            peer.publicPort = peerPort;
-          }
-          await _initiateHolePunch(signal.fromVirtualIp, peerIp, peerPort);
-        }
-        break;
-
-      case 'punch_ack':
-        // Connection confirmed
-        final peer = _peers[signal.fromVirtualIp];
-        if (peer != null) {
-          peer.isDirectConnected = true;
-          peer.lastActivity = DateTime.now();
-          notifyListeners();
-        }
-        break;
+  /// Key and session from a punch signal. When the heartbeat carries keys
+  /// it is the only key source; signals fill in for a server that doesn't.
+  void _learnFromSignal(PeerConnection peer, Map<String, dynamic> payload) {
+    final advert = payload['p2p_key'];
+    if (!_serverRelaysKeys) {
+      if (advert is String) {
+        _applyKeyAdvert(peer, advert, fromServer: false);
+      } else if (peer.publicKey == null) {
+        // Apps with encryption always send their key: this one predates it.
+        peer.security = P2pPeerSecurity.peerOutdated;
+      }
+      notifyListeners();
+    }
+    final key = peer.publicKey;
+    final session = int.tryParse('${payload['p2p_session']}');
+    if (key != null && session != null && session > 0) {
+      _crypto?.notePeerSessionHint(key, session);
     }
   }
 
@@ -593,36 +858,29 @@ class P2pService extends ChangeNotifier {
     }
   }
 
-  /// Send keepalive pings to directly connected peers
+  /// Send keepalive hellos to directly connected peers
   void _sendKeepAlives() {
     if (_udpSocket == null) return;
 
     final staleThreshold = DateTime.now().subtract(_peerTimeout);
+    var changed = false;
 
     for (final peer in _peers.values) {
-      if (peer.isDirectConnected) {
-        if (peer.lastActivity.isBefore(staleThreshold)) {
-          // Peer timed out
-          peer.isDirectConnected = false;
-          notifyListeners();
-          continue;
-        }
-
-        try {
-          _udpSocket!.send(
-            utf8.encode('LVPN_PING'),
-            InternetAddress(peer.publicIp),
-            peer.publicPort,
-          );
-        } catch (_) {
-          peer.isDirectConnected = false;
-        }
+      if (!peer.isDirectConnected) continue;
+      if (peer.lastActivity.isBefore(staleThreshold)) {
+        // Peer timed out
+        peer.isDirectConnected = false;
+        changed = true;
+        continue;
       }
+      _sendHello(peer, peer.publicIp, peer.publicPort);
     }
+
+    if (changed) notifyListeners();
   }
 
-  /// Relay data through the server (fallback)
-  Future<bool> _relayData(String targetVirtualIp, Uint8List data) async {
+  /// Relay a sealed packet through the server (fallback)
+  Future<bool> _relayData(String targetVirtualIp, Uint8List packet) async {
     if (_networkSlug == null || _deviceId == null) return false;
 
     try {
@@ -635,7 +893,7 @@ class P2pService extends ChangeNotifier {
               'source_machine_id': _deviceId,
               'license_key': _licenseKey ?? '',
               'target_virtual_ip': targetVirtualIp,
-              'data': base64Encode(data),
+              'data': base64Encode(packet),
             }),
           )
           .timeout(const Duration(seconds: 10));
@@ -647,45 +905,18 @@ class P2pService extends ChangeNotifier {
     }
   }
 
-  /// Build a packet with virtual IP header
-  Uint8List _buildPacket(String virtualIp, Uint8List data) {
-    final parts = virtualIp.split('.');
-    if (parts.length != 4) return data;
-
-    final header = Uint8List(4);
-    for (int i = 0; i < 4; i++) {
-      final octet = int.tryParse(parts[i]);
-      if (octet == null || octet < 0 || octet > 255) return data;
-      header[i] = octet;
-    }
-
-    final packet = Uint8List(4 + data.length);
-    packet.setRange(0, 4, header);
-    packet.setRange(4, 4 + data.length, data);
-    return packet;
-  }
-
-  /// Resolve a public IP:port to a virtual IP by looking up peers
-  String? _resolveVirtualIp(String publicIp, int publicPort) {
+  /// The peer at a public endpoint: exact IP:port first, else IP only
+  PeerConnection? _peerAt(String publicIp, [int? publicPort]) {
     for (final peer in _peers.values) {
       if (peer.publicIp == publicIp &&
           (peer.publicPort == publicPort || peer.publicPort == 0)) {
-        return peer.virtualIp;
+        return peer;
       }
     }
-    // Fallback: match by IP only
     for (final peer in _peers.values) {
-      if (peer.publicIp == publicIp) {
-        return peer.virtualIp;
-      }
+      if (peer.publicIp == publicIp) return peer;
     }
     return null;
-  }
-
-  /// Extract virtual IP from packet header
-  String? _extractVirtualIp(Uint8List data) {
-    if (data.length < 4) return null;
-    return '${data[0]}.${data[1]}.${data[2]}.${data[3]}';
   }
 
   // ── Screenshot demo data (lib/dev/shot_harness.dart only) ──
@@ -700,6 +931,7 @@ class P2pService extends ChangeNotifier {
             publicPort: 40000,
             displayName: e.key,
             isDirectConnected: e.value,
+            security: P2pPeerSecurity.encrypted,
           ),
       });
     _isActive = true;

@@ -152,6 +152,16 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 14),
         ],
+        // Members that can't be reached because of the app version
+        if (s.p2p.securityNotice case final notice?) ...[
+          M3Banner(
+            tone: M3Tone.amber,
+            icon: Icons.lock_outline,
+            title: 'เชื่อมต่อกับบางคนในวงไม่ได้',
+            message: notice,
+          ),
+          const SizedBox(height: 14),
+        ],
         _Hero(
           services: s,
           onToggle: _toggleLan,
