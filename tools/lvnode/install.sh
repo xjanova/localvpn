@@ -8,7 +8,8 @@
 #
 # Roles: relay (LVR1 relay for members who can't punch), game (WireGuard exit
 # that only forwards to game servers), vpn (full WireGuard VPN, Pro).
-# Put lvnode-linux-x64 next to this script, or it is downloaded.
+# Put lvnode-linux-x64 (or -arm64 on ARM, e.g. Oracle Ampere) next to this
+# script, or it is downloaded.
 # Re-running is safe; --uninstall removes the service.
 set -euo pipefail
 
@@ -16,7 +17,7 @@ ID=""
 SECRET=""
 ROLES="relay"
 API="https://xman4289.com/api/v1/localvpn"
-BIN_URL="https://xman4289.com/downloads/lvnode/lvnode-linux-x64"
+BIN_URL=""
 RELAY_PORT=51821
 WG_PORT=51820
 UNINSTALL=0
@@ -38,6 +39,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $EUID -eq 0 ]] || die "run it with sudo"
+
+case "$(uname -m)" in
+  x86_64|amd64) BIN_NAME="lvnode-linux-x64" ;;
+  aarch64|arm64) BIN_NAME="lvnode-linux-arm64" ;;
+  *) die "unsupported CPU: $(uname -m)" ;;
+esac
+[[ -n "$BIN_URL" ]] || BIN_URL="https://xman4289.com/downloads/lvnode/$BIN_NAME"
 
 if (( UNINSTALL )); then
   systemctl disable --now lvnode 2>/dev/null || true
@@ -72,8 +80,8 @@ apt-get install -y -qq "${packages[@]}" >/dev/null
 
 echo "==> lvnode binary"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "$here/lvnode-linux-x64" ]]; then
-  install -m 755 "$here/lvnode-linux-x64" /usr/local/bin/lvnode.new
+if [[ -f "$here/$BIN_NAME" ]]; then
+  install -m 755 "$here/$BIN_NAME" /usr/local/bin/lvnode.new
 else
   curl -fsSL "$BIN_URL" -o /usr/local/bin/lvnode.new
   chmod 755 /usr/local/bin/lvnode.new
