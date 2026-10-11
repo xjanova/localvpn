@@ -5,6 +5,8 @@ import android.content.Intent
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -12,7 +14,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 
-class MainActivity : FlutterActivity() {
+class MainActivity : FlutterActivity(), LocalVpnService.Listener {
     companion object {
         private const val TAG = "MainActivity"
     }
@@ -24,6 +26,17 @@ class MainActivity : FlutterActivity() {
     private var pendingResult: MethodChannel.Result? = null
     private var pendingVirtualIp: String? = null
     private var pendingSubnet: String? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var vpnChannel: MethodChannel? = null
+
+    // Hands every packet the TUN reader queued since the last run to Dart in one call.
+    private val deliverPackets = Runnable {
+        val packets = LocalVpnService.takePackets()
+        if (packets.isNotEmpty()) {
+            vpnChannel?.invokeMethod("onTunPackets", packets)
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -48,7 +61,9 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, VPN_CHANNEL).setMethodCallHandler { call, result ->
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, VPN_CHANNEL)
+        vpnChannel = channel
+        channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "startVpn" -> {
                     val virtualIp = call.argument<String>("virtualIp")
@@ -56,6 +71,10 @@ class MainActivity : FlutterActivity() {
 
                     if (virtualIp == null || subnet == null) {
                         result.error("INVALID_ARGS", "virtualIp and subnet are required", null)
+                        return@setMethodCallHandler
+                    }
+                    if (VirtualSubnet.parse(virtualIp, subnet) == null) {
+                        result.error("INVALID_ARGS", "ข้อมูล IP ของวงเครือข่ายไม่ถูกต้อง", null)
                         return@setMethodCallHandler
                     }
 
@@ -73,18 +92,58 @@ class MainActivity : FlutterActivity() {
                 "stopVpn" -> {
                     val stopIntent = Intent(this, LocalVpnService::class.java)
                     stopIntent.action = LocalVpnService.ACTION_STOP
-                    startService(stopIntent)
+                    try {
+                        startService(stopIntent)
+                    } catch (e: IllegalStateException) {
+                        // Background start limits: no foreground VPN is running to stop.
+                        Log.w(TAG, "Could not deliver stop request", e)
+                    }
                     result.success(true)
                 }
                 "getVpnStatus" -> {
                     val status = if (LocalVpnService.isRunning) "connected" else "disconnected"
                     result.success(status)
                 }
+                "injectPacket" -> {
+                    val data = call.argument<ByteArray>("data")
+                    result.success(data != null && LocalVpnService.injectPacket(data))
+                }
+                "getStats" -> {
+                    result.success(LocalVpnService.stats())
+                }
                 else -> {
                     result.notImplemented()
                 }
             }
         }
+
+        LocalVpnService.listener = this
+        // Anything queued before this engine attached.
+        mainHandler.post(deliverPackets)
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        // The VPN keeps running without the UI; it just has nobody to hand
+        // packets to until the app is opened again.
+        if (LocalVpnService.listener === this) {
+            LocalVpnService.listener = null
+        }
+        mainHandler.removeCallbacks(deliverPackets)
+        vpnChannel?.setMethodCallHandler(null)
+        vpnChannel = null
+        super.cleanUpFlutterEngine(flutterEngine)
+    }
+
+    override fun onPacketsQueued() {
+        mainHandler.post(deliverPackets)
+    }
+
+    override fun onVpnStatusChanged(status: String) {
+        vpnChannel?.invokeMethod("onVpnStatusChanged", status)
+    }
+
+    override fun onVpnError(message: String) {
+        vpnChannel?.invokeMethod("onVpnError", message)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -114,8 +173,14 @@ class MainActivity : FlutterActivity() {
         intent.action = LocalVpnService.ACTION_START
         intent.putExtra(LocalVpnService.EXTRA_VIRTUAL_IP, virtualIp)
         intent.putExtra(LocalVpnService.EXTRA_SUBNET, subnet)
-        startService(intent)
-        pendingResult?.success(true)
+        try {
+            startService(intent)
+            pendingResult?.success(true)
+        } catch (e: IllegalStateException) {
+            // Background start limits (Android 8+) when the app is not in front.
+            Log.e(TAG, "Could not start LocalVpnService", e)
+            pendingResult?.error("VPN_ERROR", "เปิด VPN ไม่สำเร็จ กรุณาเปิดแอปแล้วลองใหม่", null)
+        }
         pendingResult = null
     }
 

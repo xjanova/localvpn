@@ -6,10 +6,22 @@ import android.app.NotificationManager
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 
 class LocalVpnService : VpnService() {
+
+    /** Implemented by MainActivity while its Flutter engine is attached. */
+    interface Listener {
+        /** Reader thread: packets are waiting in [takePackets]. Must be cheap. */
+        fun onPacketsQueued()
+        /** Main thread: "connected" or "disconnected". */
+        fun onVpnStatusChanged(status: String)
+        /** Main thread: the tunnel failed; [message] is shown to the user. */
+        fun onVpnError(message: String)
+    }
 
     companion object {
         const val ACTION_START = "com.xjanova.localvpn.START"
@@ -24,9 +36,31 @@ class LocalVpnService : VpnService() {
         @Volatile
         var isRunning: Boolean = false
             private set
+
+        // Everything below is used on the main thread only.
+        private var tunnel: VpnTunnel? = null
+        private val counters = VpnTunnel.Stats()
+
+        /** Null while no Flutter UI is attached; the tunnel keeps running. */
+        var listener: Listener? = null
+            set(value) {
+                field = value
+                tunnel?.setWake(value?.let { it::onPacketsQueued })
+            }
+
+        fun takePackets(): List<ByteArray> = tunnel?.takePackets() ?: emptyList()
+
+        fun injectPacket(data: ByteArray): Boolean = tunnel?.inject(data) ?: false
+
+        fun stats(): Map<String, Any> = mapOf(
+            "running" to (tunnel != null),
+            "packetsIn" to counters.packetsIn.get(),
+            "packetsOut" to counters.packetsOut.get(),
+            "packetsDropped" to counters.packetsDropped.get(),
+        )
     }
 
-    private var vpnInterface: ParcelFileDescriptor? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -38,61 +72,93 @@ class LocalVpnService : VpnService() {
             ACTION_STOP -> {
                 stopVpn()
             }
+            else -> {
+                // Restarted after the process died: the Flutter side that carried
+                // the traffic is gone, so there is nothing to resume.
+                if (tunnel == null) stopSelf(startId)
+            }
         }
         return START_STICKY
     }
 
-    private fun startVpn(virtualIp: String, subnet: String) {
+    private fun startVpn(virtualIp: String, subnetText: String) {
+        val subnet = VirtualSubnet.parse(virtualIp, subnetText)
+        if (subnet == null) {
+            failStart("ข้อมูล IP ของวงเครือข่ายไม่ถูกต้อง")
+            return
+        }
+
+        // Joining another network replaces the running interface.
+        closeTunnel()
+
+        var pfd: ParcelFileDescriptor? = null
         try {
-            // Parse subnet — support both CIDR (10.10.0.0/24) and netmask (255.255.255.0)
-            val prefixLength: Int
-            val routeAddress: String
-
-            if (subnet.contains("/")) {
-                val parts = subnet.split("/")
-                routeAddress = parts[0]
-                prefixLength = parts[1].toIntOrNull() ?: 24
-            } else {
-                routeAddress = "10.10.0.0"
-                prefixLength = subnetMaskToPrefixLength(subnet)
-            }
-
-            val builder = Builder()
+            // Only the virtual LAN subnet goes through the VPN, so internet
+            // traffic keeps using the normal connection.
+            pfd = Builder()
                 .setSession("LocalVPN")
-                .addAddress(virtualIp, prefixLength)
-                .addRoute(routeAddress, prefixLength)
-                .setMtu(1500)
+                .addAddress(virtualIp, subnet.prefix)
+                .addRoute(VirtualSubnet.format(subnet.network), subnet.prefix)
+                .setMtu(VpnTunnel.MTU)
                 .setBlocking(false)
-
-            // Don't route all traffic through VPN — only the virtual LAN subnet
-            // This prevents breaking internet connectivity
-
-            vpnInterface = builder.establish()
-
-            if (vpnInterface != null) {
-                isRunning = true
-                startForegroundNotification()
-                Log.i(TAG, "VPN started: $virtualIp/$prefixLength route=$routeAddress")
-            } else {
-                Log.e(TAG, "Failed to establish VPN interface")
-                stopVpn()
+                .establish()
+            if (pfd == null) {
+                failStart("ไม่ได้รับอนุญาตให้เปิด VPN กรุณาเชื่อมต่อใหม่")
+                return
             }
+
+            val newTunnel = VpnTunnel(pfd, subnet, counters) { failed, message ->
+                mainHandler.post { onTunnelFailed(failed, message) }
+            }
+            newTunnel.setWake(listener?.let { it::onPacketsQueued })
+            newTunnel.start()
+            tunnel = newTunnel
+            isRunning = true
+            startForegroundNotification()
+            Log.i(TAG, "VPN started: $virtualIp/${subnet.prefix} mtu=${VpnTunnel.MTU}")
+            listener?.onVpnStatusChanged("connected")
         } catch (e: Exception) {
             Log.e(TAG, "Error starting VPN", e)
-            stopVpn()
+            // Once the tunnel is stored it owns the fd and failStart() closes it.
+            if (tunnel == null) {
+                try {
+                    pfd?.close()
+                } catch (closeError: Exception) {
+                    Log.w(TAG, "Error closing VPN interface", closeError)
+                }
+            }
+            failStart("เปิดการ์ดเครือข่ายเสมือนไม่สำเร็จ")
         }
     }
 
-    private fun stopVpn() {
-        try {
-            vpnInterface?.close()
-            vpnInterface = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing VPN interface", e)
-        }
-        isRunning = false
+    private fun failStart(message: String) {
+        Log.e(TAG, message)
+        closeTunnel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+        listener?.onVpnError(message)
+    }
+
+    private fun onTunnelFailed(failed: VpnTunnel, message: String) {
+        if (tunnel !== failed) return  // already stopped or replaced
+        failStart(message)
+    }
+
+    private fun stopVpn() {
+        val wasRunning = closeTunnel()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        if (wasRunning) listener?.onVpnStatusChanged("disconnected")
+    }
+
+    /** Stops the reader and closes the interface. Returns whether one was open. */
+    private fun closeTunnel(): Boolean {
+        val current = tunnel ?: return false
+        tunnel = null
+        isRunning = false
+        current.stop()
+        Log.i(TAG, "VPN stopped")
+        return true
     }
 
     private fun startForegroundNotification() {
@@ -125,25 +191,15 @@ class LocalVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        stopVpn()
+        if (closeTunnel()) listener?.onVpnStatusChanged("disconnected")
         super.onDestroy()
     }
 
     override fun onRevoke() {
-        stopVpn()
-        super.onRevoke()
-    }
-
-    private fun subnetMaskToPrefixLength(mask: String): Int {
-        return when (mask) {
-            "255.255.255.0" -> 24
-            "255.255.0.0" -> 16
-            "255.0.0.0" -> 8
-            "255.255.255.128" -> 25
-            "255.255.255.192" -> 26
-            "255.255.255.224" -> 27
-            "255.255.255.240" -> 28
-            else -> 24
-        }
+        // Another VPN took over or the user turned it off in system settings.
+        // This arrives on a binder thread, while the tunnel and the Flutter
+        // channel belong to the main thread. super.onRevoke() only calls
+        // stopSelf(), which stopVpn() does.
+        mainHandler.post { stopVpn() }
     }
 }
