@@ -157,6 +157,7 @@ void main() {
     final c = fake.commands;
     expect(c, contains('ip link add wg0 type wireguard'));
     expect(c, contains('ip address add 10.66.0.1/24 dev wg0'));
+    expect(c, contains('iptables -I INPUT 1 -p udp --dport 51820 -j ACCEPT'));
     expect(c,
         contains('iptables -t nat -A POSTROUTING -s 10.66.0.0/24 -o ens33 -j MASQUERADE'));
     expect(c, contains('iptables -A LVNODE_FWD -d 169.254.0.0/16 -j DROP'));

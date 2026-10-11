@@ -171,6 +171,7 @@ class NodeAgent {
       final r = RelayServer(nodeId: config.nodeId, secret: config.secret);
       await r.bind(port: config.relayPort);
       relay = r;
+      await openInput(config.relayPort);
       _log('relay listening on udp/${config.relayPort}');
     }
     if (config.hasExit) {
@@ -420,6 +421,7 @@ class NodeAgent {
     await _must('ip', ['address', 'flush', 'dev', iface]);
     await _must('ip', ['address', 'add', address, 'dev', iface]);
     await _must('ip', ['link', 'set', iface, 'mtu', '1420', 'up']);
+    await openInput(port);
     final pub = await _run('wg', ['show', iface, 'public-key']);
     if (pub.exitCode == 0) wgPublicKey = '${pub.stdout}'.trim();
     _ifaceState = state;
@@ -458,6 +460,12 @@ class NodeAgent {
     await _must('iptables', ['-A', 'LVNODE_IN', '-j', 'DROP']);
     _natState = state;
   }
+
+  /// Lets UDP [port] in ahead of an image's own rules: Oracle Cloud's
+  /// Ubuntu ends INPUT with a REJECT that drops everything but SSH.
+  Future<void> openInput(int port) => _ensureRule(
+      [], 'INPUT', ['-p', 'udp', '--dport', '$port', '-j', 'ACCEPT'],
+      insert: true);
 
   /// Game mode forwards only to the admin's game CIDRs; vpn mode to the
   /// whole internet. Private ranges and SMTP are blocked in both.
